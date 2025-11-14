@@ -548,6 +548,8 @@ async def __diag_geocode(q: str = Query(..., description="Place to geocode")):
 # --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
 # --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
 
+
+
 @app.get("/report/county")
 async def report_county(
     state: str = Query(...),
@@ -555,17 +557,38 @@ async def report_county(
     hours: int = Query(36),
     metric: str = Query("gust"),
     threshold: float = Query(0.0),
-):
-    rows = await build_state_rows_all_counties(
-        state_abbr=state,
+) -> List[Dict[str, Any]]:
+    """
+    Client compatibility shim:
+      - If state='US' and county is 'Nationwide' (or similar), return the national list.
+      - Otherwise, return the matching county from the state-level rows.
+    """
+    st = (state or "").upper()
+    cname = (county or "").strip().lower()
+
+    # Special case: US / Nationwide triggers national output
+    if st == "US" and cname in ("nationwide", "national", "us"):
+        rows = await all_counties_national(
+            hours=hours,
+            metric=metric,
+            threshold=threshold,
+        )
+        return rows
+
+    # Normal case: get all rows for that state and filter by county name
+    rows = await rows_for_state(
+        state=st,
         hours=hours,
         metric=metric,
         threshold=threshold,
     )
-    cname = county.strip().lower()
-    out = [r for r in rows if r.get("county", "").strip().lower() == cname]
-    return out
 
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        rc = str(r.get("county", "")).strip().lower()
+        if rc == cname:
+            out.append(r)
+    return out
 
 @app.get("/wcp/region")
 def wcp_region(
