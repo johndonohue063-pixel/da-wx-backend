@@ -336,6 +336,7 @@ async def build_state_rows_all_counties(
 ) -> List[Dict[str, Any]]:
     """
     Build rows for all counties in a state using census_counties, geocode, live_wind.
+    Tolerant of geocode/wind failures; keeps counties with zero winds rather than dropping them.
     Output uses camelCase keys for wind values:
       expectedGust, expectedSustained, maxGust, maxSustained
     """
@@ -371,12 +372,20 @@ async def build_state_rows_all_counties(
 
                 query_name = f"{county_name} County, {STATE_NAME.get(state_abbr, state_abbr)}"
                 async with sem:
-                    g = await geocode(client, query_name)
-                    if not g:
-                        return
-                    lat = g["lat"]
-                    lon = g["lon"]
-                    w = await live_wind(client, lat, lon, hh)
+                    try:
+                        g = await geocode(client, query_name)
+                        if g and "lat" in g and "lon" in g:
+                            lat = float(g["lat"])
+                            lon = float(g["lon"])
+                        else:
+                            lat = 0.0
+                            lon = 0.0
+                        w = await live_wind(client, lat, lon, hh)
+                    except Exception:
+                        # If anything fails, keep the county with zero winds
+                        lat = 0.0
+                        lon = 0.0
+                        w = {"exp_sust": 0.0, "exp_gust": 0.0, "max_sust": 0.0, "max_gust": 0.0}
 
                 eg = float(w.get("exp_gust", 0.0) or 0.0)
                 es = float(w.get("exp_sust", 0.0) or 0.0)
@@ -406,6 +415,14 @@ async def build_state_rows_all_counties(
                     "severity": sev,
                     "crews": crew_count,
                 }
+                # legacy aliases for WCP client
+                row["expGust"] = eg
+                row["expSust"] = es
+                row["maxGust"] = mg
+                row["maxSust"] = ms
+                row["crewCount"] = crew_count
+                row["threatLevel"] = sev
+
                 out.append(row)
             except Exception:
                 return
@@ -414,8 +431,6 @@ async def build_state_rows_all_counties(
 
     out.sort(key=lambda r: r.get("population", 0), reverse=True)
     return out
-
-
 async def all_counties_national(
     hours: int = 36,
     metric: str = "gust",
