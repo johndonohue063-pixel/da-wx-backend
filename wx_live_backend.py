@@ -528,6 +528,60 @@ async def __diag_geocode(q: str = Query(..., description="Place to geocode")):
     return {"q": q, "result": res}
 
 
+
+
+# --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
+# --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
+
+@app.get("/report/county")
+async def report_county(
+    state: str = Query(...),
+    county: str = Query(...),
+    hours: int = Query(36),
+    metric: str = Query("gust"),
+    threshold: float = Query(0.0),
+):
+    rows = await build_state_rows_all_counties(
+        state_abbr=state,
+        hours=hours,
+        metric=metric,
+        threshold=threshold,
+    )
+    cname = county.strip().lower()
+    out = [r for r in rows if r.get("county", "").strip().lower() == cname]
+    return out
+
+
+@app.get("/wcp/region")
+def wcp_region(
+    region: str = Query("NE"),
+    hours: int = Query(36),
+    metric: str = Query("gust"),
+    threshold: float = Query(0.0),
+):
+    # Delegate to existing region report
+    return report_region(region=region, hours=hours, metric=metric, threshold=threshold)
+
+
+@app.get("/wcp/state")
+async def wcp_state(
+    state: str = Query(...),
+    hours: int = Query(36),
+    metric: str = Query("gust"),
+    threshold: float = Query(0.0),
+):
+    return await report_state(state=state, hours=hours, metric=metric, threshold=threshold)
+
+
+@app.get("/wcp/national")
+async def wcp_national(
+    hours: int = Query(36),
+    metric: str = Query("gust"),
+    threshold: float = Query(0.0),
+):
+    return await report_national(hours=hours, metric=metric, threshold=threshold)
+
+
 if __name__ == "__main__":
     async def _demo():
         rows = await all_counties_national(hours=12, metric="gust", threshold=0.0)
