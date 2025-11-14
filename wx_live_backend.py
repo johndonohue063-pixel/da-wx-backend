@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 
 import httpx
 from fastapi import FastAPI, Query
+MAX_ROWS = 50  # hard cap on rows returned per request
 
 app = FastAPI(title="WX Live Backend", version="1.0")
 
@@ -333,12 +334,15 @@ async def build_state_rows_all_counties(
     hours: int = 36,
     metric: str = "gust",
     threshold: float | None = None,
+    limit: int = MAX_ROWS,
 ) -> List[Dict[str, Any]]:
     """
     Build rows for all counties in a state using census_counties, geocode, live_wind.
     Tolerant of geocode/wind failures; keeps counties with zero winds rather than dropping them.
     Output uses camelCase keys for wind values:
       expectedGust, expectedSustained, maxGust, maxSustained
+
+    Returns at most `limit` rows, sorted by max gust descending.
     """
     state_abbr = (state_abbr or "").upper()
     if not state_abbr:
@@ -365,6 +369,9 @@ async def build_state_rows_all_counties(
         sem = asyncio.Semaphore(8)
 
         async def _one(c: Dict[str, Any]) -> None:
+            nonlocal out
+            if len(out) >= limit:
+                return
             try:
                 county_name = str(c.get("county", "")).strip()
                 if not county_name:
@@ -382,7 +389,6 @@ async def build_state_rows_all_counties(
                             lon = 0.0
                         w = await live_wind(client, lat, lon, hh)
                     except Exception:
-                        # If anything fails, keep the county with zero winds
                         lat = 0.0
                         lon = 0.0
                         w = {"exp_sust": 0.0, "exp_gust": 0.0, "max_sust": 0.0, "max_gust": 0.0}
@@ -429,28 +435,38 @@ async def build_state_rows_all_counties(
 
         await asyncio.gather(*[_one(c) for c in counties])
 
-    out.sort(key=lambda r: r.get("population", 0), reverse=True)
-    return out
+    out.sort(key=lambda r: r.get("maxGust", 0.0), reverse=True)
+    return out[:limit]
+
+
 async def all_counties_national(
     hours: int = 36,
     metric: str = "gust",
     threshold: float | None = None,
 ) -> List[Dict[str, Any]]:
     """
-    Nationwide, every county.
-    Flat list of rows in the same shape as build_state_rows_all_counties.
+    Nationwide, capped.
+    Returns at most MAX_ROWS rows across all states, sorted by max gust.
     """
     rows: List[Dict[str, Any]] = []
     for st in STATE_NAME.keys():
         try:
-            part = await build_state_rows_all_counties(st, hours, metric, threshold)
+            part = await build_state_rows_all_counties(
+                state_abbr=st,
+                hours=hours,
+                metric=metric,
+                threshold=threshold,
+                limit=MAX_ROWS,
+            )
         except Exception:
             part = []
         if part:
             rows.extend(part)
+        if len(rows) >= MAX_ROWS:
+            break
 
-    rows.sort(key=lambda r: r.get("population", 0), reverse=True)
-    return rows
+    rows.sort(key=lambda r: r.get("maxGust", 0.0), reverse=True)
+    return rows[:MAX_ROWS]
 
 
 async def rows_for_state(
@@ -464,6 +480,7 @@ async def rows_for_state(
         hours=hours or 36,
         metric=metric or "gust",
         threshold=threshold,
+        limit=MAX_ROWS,
     )
 
 
@@ -484,12 +501,15 @@ def rows_for_region_sync(
                 hours=hours,
                 metric=metric,
                 threshold=threshold,
+                limit=MAX_ROWS,
             )
         )
         allrows.extend(part)
+        if len(allrows) >= MAX_ROWS:
+            break
 
-    allrows.sort(key=lambda x: x.get("population", 0), reverse=True)
-    return allrows
+    allrows.sort(key=lambda x: x.get("maxGust", 0.0), reverse=True)
+    return allrows[:MAX_ROWS]
 
 
 @app.get("/report/state")
@@ -543,11 +563,8 @@ async def __diag_geocode(q: str = Query(..., description="Place to geocode")):
     return {"q": q, "result": res}
 
 
-
-
 # --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
 # --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
-
 
 
 @app.get("/report/county")
@@ -566,7 +583,6 @@ async def report_county(
     st = (state or "").upper()
     cname = (county or "").strip().lower()
 
-    # Special case: US / Nationwide triggers national output
     if st == "US" and cname in ("nationwide", "national", "us"):
         rows = await all_counties_national(
             hours=hours,
@@ -575,7 +591,6 @@ async def report_county(
         )
         return rows
 
-    # Normal case: get all rows for that state and filter by county name
     rows = await rows_for_state(
         state=st,
         hours=hours,
@@ -590,6 +605,7 @@ async def report_county(
             out.append(r)
     return out
 
+
 @app.get("/wcp/region")
 def wcp_region(
     region: str = Query("NE"),
@@ -597,7 +613,6 @@ def wcp_region(
     metric: str = Query("gust"),
     threshold: float = Query(0.0),
 ):
-    # Delegate to existing region report
     return report_region(region=region, hours=hours, metric=metric, threshold=threshold)
 
 
