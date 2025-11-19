@@ -1,4 +1,4 @@
-# divergentalliance_new
+# divergentalliance
 
 A new Flutter project.
 

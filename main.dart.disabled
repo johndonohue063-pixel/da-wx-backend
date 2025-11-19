@@ -1,0 +1,31 @@
+import 'package:flutter/material.dart';
+import 'package:divergent_alliance/screens/castle_landing.dart';
+import 'package:divergent_alliance/screens/weather_center_pro.dart';
+import 'package:divergent_alliance/pages/shop_under_construction.dart';
+import 'package:divergent_alliance/screens/home_screen.dart';
+import 'package:divergent_alliance/screens/truck_landing.dart';
+
+
+void main() => runApp(const MyApp());
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Divergent Alliance',
+      debugShowCheckedModeBanner: false,
+      home: TruckLanding(),
+      routes: {
+        '/weather':    (_) => const WeatherCenterPro(),
+        '/weatherPro': (_) => const WeatherCenterPro(), // keeps existing pushes working
+        '/shop':       (_) => const ShopUnderConstruction(),
+      },
+      onUnknownRoute: (settings) => MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Route not found')),
+          body: Center(child: Text('Unknown route: ${settings.name}')),
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,11 @@
+Cluster,County,State,Wind Outage Probability %,Population,Suggested Crews,Predicted Incidents,Predicted Customers Out,Staging Suggestions,Primary + Secondary Utilities,Predicted Impact Date (peak),Threat Level
+Gulf Bend,Harris,TX,22,4882000,90,260,32000,NRG Park,CenterPoint + TNMP,2025-10-25,Level 2
+Gulf Bend,Galveston,TX,29,355000,28,85,10400,Galveston College,CenterPoint + TNMP,2025-10-25,Level 2
+Southeast Coastal,Duval,FL,38,995567,42,118,18450,JAX E Center,JEA + FPL,2025-10-24,Level 2
+Southeast Coastal,St. Johns,FL,35,292466,26,72,9100,St. Augustine H.S.,FPL + Beaches Energy,2025-10-24,Level 2
+Atlantic Mid,Chatham,GA,31,308900,24,73,9800,Savannah I-95 MM99,GA Power + Coastal EMC,2025-10-24,Level 2
+Atlantic Mid,Beaufort,SC,34,195000,18,59,7800,Beaufort Civic Center,Dominion SC + Palmetto,2025-10-24,Level 2
+Atlantic Mid,Horry,SC,27,351000,22,64,8200,Myrtle Beach Speedway,Horry Electric + Santee Cooper,2025-10-25,Level 2
+Northeast Shore,Suffolk,NY,19,1523000,40,110,12000,SCCC Brentwood,PSEG LI + LIPA,2025-10-26,Level 1
+Northeast Shore,New Haven,CT,21,864000,26,70,9000,Yale West Lot,UI + Eversource,2025-10-26,Level 1
+Tidewater,Virginia Beach,VA,23,457000,20,58,7600,VB Convention Center,Dominion + REC,2025-10-25,Level 1

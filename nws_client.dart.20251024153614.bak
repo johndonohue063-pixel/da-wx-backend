@@ -1,0 +1,48 @@
+import "dart:async"; import "dart:convert"; import "dart:math";
+import "package:http/http.dart" as http;
+
+class NwsClient{
+  static const _ua="DivergentAlliance/1.0 (ops@divergentalliance.com)";
+  static const _timeout=Duration(seconds:12);
+
+  static Future<Map<String,dynamic>> windForPoint({required double lat, required double lon, int hours=24}) async{
+    final h={"User-Agent":_ua,"Accept":"application/geo+json"};
+    final p=await http.get(Uri.parse("https://api.weather.gov/points/$lat,$lon"),headers:h).timeout(_timeout);
+    if(p.statusCode!=200){throw Exception("points ${p.statusCode}");}
+    final m=json.decode(p.body); final off=m["properties"]["gridId"], gx=m["properties"]["gridX"], gy=m["properties"]["gridY"];
+    if(off==null||gx==null||gy==null){throw Exception("grid meta missing");}
+    final r=await http.get(Uri.parse("https://api.weather.gov/gridpoints/$off/$gx,$gy/forecast/hourly"),headers=h).timeout(_timeout);
+    if(r.statusCode!=200){throw Exception("hourly ${r.statusCode}");}
+    final periods=(json.decode(r.body)["properties"]?["periods"] as List?)??const[];
+    double g=0,s=0; for(int i=0;i<periods.length && i<hours;i++){
+      final m=periods[i] as Map<String,dynamic>;
+      final gm=_mph(m["windGust"]), sm=_mph(m["windSpeed"]);
+      if(gm!=null) g=max(g,gm); if(sm!=null) s=max(s,sm);
+    }
+    return {"gust_mph":g,"sust_mph":s,"office":"$off","grid":"$gx,$gy"};
+  }
+  static double? _mph(dynamic v){
+    if(v==null) return null; final s=v.toString();
+    final one=RegExp(r"(\\d+)\\s*mph").firstMatch(s); if(one!=null) return double.tryParse(one.group(1)!);
+    final two=RegExp(r"(\\d+)\\s*to\\s*(\\d+)\\s*mph").firstMatch(s);
+    if(two!=null){final a=double.tryParse(two.group(1)!); final b=double.tryParse(two.group(2)!); if(a!=null&&b!=null) return (a+b)/2;}
+    return null;
+  }
+  static Future<List<Map<String,dynamic>>> nationalWind({required List<Map<String,dynamic>> points, int hours=24, int concurrency=6}) async{
+    final out=<Map<String,dynamic>>[]; final sem=_Sem(concurrency); final fut=points.map((c) async{
+      await sem.acquire(); try{
+        final w=await windForPoint(lat:(c["lat"] as num).toDouble(), lon:(c["lon"] as num).toDouble(), hours:hours);
+        out.add({
+          "Cluster":c["Cluster"]??"", "County":c["County"]??"Unknown","State":c["State"]??"??","Population":c["Population"]??0,
+          "Max Gust (mph)":w["gust_mph"], "Max Sustained (mph)":w["sust_mph"], "NWS Grid":"${w["office"]} ${w["grid"]}",
+          "Wind Outage Probability %":0.0, "Suggested Crews":0, "Predicted Incidents":0, "Predicted Customers Out":0,
+          "Staging Suggestions":"", "Primary + Secondary Utilities":"", "Predicted Impact Date (peak)":"D0","Threat Level":"Level 0",
+        });
+      } finally{ sem.release(); }
+    }).toList(); await Future.wait(fut); return out;
+  }
+}
+class _Sem{int _p; final _q=<Completer<void>>[]; _Sem(this._p);
+  Future<void> acquire(){ if(_p>0){_p--; return Future.value();} final c=Completer<void>(); _q.add(c); return c.future; }
+  void release(){ if(_q.isNotEmpty){_q.removeAt(0).complete();} else{_p++;} }
+}

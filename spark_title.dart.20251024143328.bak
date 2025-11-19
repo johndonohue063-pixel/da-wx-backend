@@ -1,0 +1,177 @@
+import 'dart:math';
+import 'package:flutter/material.dart';
+
+class SparkTitle extends StatefulWidget {
+  final String text;
+  final TextStyle? style;
+  final double sparkDensity;   // 0.0–1.0
+  final Duration cycle;        // glow sweep duration
+
+  const SparkTitle({
+    super.key,
+    required this.text,
+    this.style,
+    this.sparkDensity = 0.45,
+    this.cycle = const Duration(seconds: 3),
+  });
+
+  @override
+  State<SparkTitle> createState() => _SparkTitleState();
+}
+
+class _SparkTitleState extends State<SparkTitle> with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+  late final List<_Spark> _sparks;
+  final _rand = Random();
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: widget.cycle)..repeat();
+    _sparks = List.generate(80, (_) => _Spark.newRandom(_rand));
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final base = (widget.style ?? const TextStyle()).copyWith(
+      fontSize: (widget.style?.fontSize ?? 28),
+      fontWeight: FontWeight.w800,
+      letterSpacing: 0.5,
+      color: Colors.white,
+    );
+
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (context, _) {
+        final t = _c.value;
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Outer soft glow
+            _glowText(widget.text, base, spread: 18, color: const Color(0xFFFF6A00).withOpacity(0.22)),
+            // Inner bright glow
+            _glowText(widget.text, base, spread: 6, color: const Color(0xFFFF6A00).withOpacity(0.55)),
+            // Core text with moving electric highlight
+            ShaderMask(
+              shaderCallback: (rect) {
+                final w = rect.width;
+                final x = (t * 1.2) % 1.0; // sweep position
+                final pos = x * w;
+                return LinearGradient(
+                  colors: const [
+                    Colors.white70,
+                    Colors.white,
+                    Color(0xFFFFE3C0),
+                    Colors.white,
+                    Colors.white70,
+                  ],
+                  stops: const [0.0, 0.45, 0.5, 0.55, 1.0],
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  transform: GradientRotation(0),
+                ).createShader(Rect.fromLTWH(pos - w * 0.15, 0, w * 0.3, rect.height));
+              },
+              blendMode: BlendMode.plus,
+              child: Text(widget.text, style: base.copyWith(color: Colors.white70)),
+            ),
+            // Occasional random flicker overlay
+            Opacity(
+              opacity: 0.35 + 0.65 * (0.5 + 0.5 * sin(2 * pi * t * 3)),
+              child: Text(widget.text, style: base.copyWith(color: const Color(0xFFFFEFD7))),
+            ),
+            // Sparks layer
+            IgnorePointer(
+              child: CustomPaint(
+                painter: _SparkPainter(
+                  sparks: _sparks,
+                  time: t,
+                  density: widget.sparkDensity,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _glowText(String s, TextStyle style, {required double spread, required Color color}) {
+    return Transform.translate(
+      offset: Offset(0, 0),
+      child: Text(
+        s,
+        style: style.copyWith(
+          foreground: Paint()
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, spread)
+            ..color = color,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+class _Spark {
+  final double u;   // 0-1 along text width
+  final double v;   // vertical offset %
+  final double size;
+  final double speed;
+  final double lifeOffset;
+
+  _Spark(this.u, this.v, this.size, this.speed, this.lifeOffset);
+
+  factory _Spark.newRandom(Random r) {
+    return _Spark(
+      r.nextDouble(),
+      0.5 + (r.nextDouble() - 0.5) * 0.6, // around midline
+      1 + r.nextDouble() * 2.8,
+      0.3 + r.nextDouble() * 1.7,
+      r.nextDouble(),
+    );
+  }
+}
+
+class _SparkPainter extends CustomPainter {
+  final List<_Spark> sparks;
+  final double time; // 0..1 loop
+  final double density;
+  const _SparkPainter({required this.sparks, required this.time, required this.density});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFFFFB56B)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+
+    int drawn = 0;
+    for (final s in sparks) {
+      if (drawn / sparks.length > density) break;
+
+      // each spark has its own loop
+      final tt = (time * s.speed + s.lifeOffset) % 1.0;
+      final fade = (tt < 0.5) ? (tt * 2.0) : (1.0 - (tt - 0.5) * 2.0);
+      final x = s.u * size.width + (sin(tt * 12.0) * 6.0);
+      final y = size.height * s.v + (cos(tt * 10.0) * 4.0);
+
+      paint.color = const Color(0xFFFFD6A3).withOpacity(0.25 + 0.75 * fade);
+      canvas.drawCircle(Offset(x, y), s.size * (0.6 + 0.8 * fade), paint);
+
+      // tiny hot core
+      final core = Paint()..color = const Color(0xFFFF6A00).withOpacity(0.35 + 0.65 * fade);
+      canvas.drawCircle(Offset(x, y), s.size * 0.35, core);
+
+      drawn++;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparkPainter oldDelegate) {
+    return oldDelegate.time != time || oldDelegate.density != density;
+  }
+}

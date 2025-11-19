@@ -1,0 +1,171 @@
+import 'dart:async';
+import 'dart:io' show Platform;
+import 'package:csv/csv.dart';
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
+import 'package:http/http.dart' as http;
+
+class WxClient {
+  WxClient._(); // static-only utility
+
+  static String? _base;
+  static const _timeout = Duration(seconds: 60);
+
+  /// Detects base URL by platform unless you override.
+  static void discover({String? overrideBase}) {
+    _base = overrideBase ?? _defaultBase();
+    // ignore: avoid_print
+    print('[WxClient:BOOT] base=$baseUrl');
+  }
+
+  static String _defaultBase() {
+    if (kIsWeb) {
+      return 'http://localhost:8010';
+    }
+    if (Platform.isAndroid) {
+      return 'http://10.0.2.2:8010';
+    }
+    return 'http://127.0.0.1:8010';
+  }
+
+  static String get baseUrl => _base ?? _defaultBase();
+
+  static Map<String, String> _qp(Map<String, Object?> src) {
+    final out = <String, String>{};
+    src.forEach((k, v) {
+      if (v == null) return;
+      final s = v.toString().trim();
+      if (s.isEmpty) return;
+      out[k] = s;
+    });
+    return out;
+  }
+
+  /// Build a URI and sanitize:
+  ///  - mirror wind_mph -> threshold
+  ///  - days_out -> horizon_hours = days*24 (and drop timeline)
+  ///  - drop empty horizon_hours
+  static Uri _build(String path, Map<String, Object?> qp) {
+    final m = Map<String, Object?>.from(qp);
+
+    if (m['wind_mph'] != null) {
+      m['threshold'] = m['wind_mph'];
+    }
+
+    final ds = m['days_out']?.toString().trim();
+    final d = ds == null ? null : int.tryParse(ds);
+    if (d != null && d > 0) {
+      m['horizon_hours'] = d * 24;
+      m.remove('timeline');
+    }
+
+    final hh = m['horizon_hours']?.toString().trim();
+    if (hh == null || hh.isEmpty) m.remove('horizon_hours');
+
+    final uri = Uri.parse(baseUrl + path).replace(queryParameters: _qp(m));
+    // ignore: avoid_print
+    print('[WxClient:FINAL] $uri');
+    return uri;
+  }
+
+  static Future<String> _getText(Uri uri,
+      {Map<String, String>? headers}) async {
+    final res = await http.get(uri, headers: headers).timeout(_timeout);
+    if (res.statusCode != 200) {
+      throw Exception('HTTP ${res.statusCode}: ${res.reasonPhrase}');
+    }
+    return res.body;
+  }
+
+  /// CSV request parsed to List<Map> with both original and normalized keys.
+  static Future<List<Map<String, dynamic>>> nationalCsv({
+    required String region,
+    required int maxZones,
+    required int windMphMin,
+    required int daysOut,
+    int? explicitHours,
+    String? state,
+  }) async {
+    final uri = nationalUri(
+      region: region,
+      maxZones: maxZones,
+      windMphMin: windMphMin,
+      daysOut: daysOut,
+      explicitHours: explicitHours,
+      state: state,
+      format: 'csv',
+    );
+    final csvText = await _getText(uri, headers: const {'Accept': 'text/csv'});
+    return compute(_parseCsvToMaps, csvText);
+  }
+
+  static Uri nationalUri({
+    required String region,
+    required int maxZones,
+    required int windMphMin,
+    required int daysOut,
+    int? explicitHours,
+    String? state,
+    String format = 'csv',
+  }) {
+    return _build('/report/national', {
+      'region': region,
+      'max_zones': maxZones,
+      'wind_mph': windMphMin,
+      if (explicitHours != null) 'horizon_hours': explicitHours,
+      if (explicitHours == null) 'days_out': daysOut,
+      'state': (state?.trim().isEmpty ?? true) ? null : state!.trim(),
+      'format': format,
+    });
+  }
+}
+
+/// Parse CSV into a list of maps, preserving original headers
+/// and adding normalized snake_case keys for each column.
+List<Map<String, dynamic>> _parseCsvToMaps(String csvText) {
+  if (csvText.trim().isEmpty) return const [];
+
+  final rows = const CsvToListConverter(
+    eol: '\n',
+    shouldParseNumbers: false,
+  ).convert(csvText);
+
+  if (rows.isEmpty) {
+    return const [];
+  }
+
+  final rawHeader = rows.first.map((e) => (e ?? '').toString()).toList();
+  if (rawHeader.isNotEmpty)
+    rawHeader[0] = rawHeader[0].replaceAll('\uFEFF', '');
+
+  String norm(String s) {
+    final t = s.trim().toLowerCase();
+    final u = t.replaceAll(RegExp(r'[^a-z0-9]+'), '_');
+    return u.replaceAll(RegExp(r'_+'), '_').replaceAll(RegExp(r'^_|_$'), '');
+  }
+
+  final headerNorm = rawHeader.map(norm).toList();
+  final out = <Map<String, dynamic>>[];
+
+  for (var i = 1; i < rows.length; i++) {
+    final r = rows[i];
+    if (r.isEmpty) continue;
+
+    final m = <String, dynamic>{};
+    for (var j = 0; j < rawHeader.length && j < r.length; j++) {
+      final originalKey = rawHeader[j].trim();
+      final normalizedKey = headerNorm[j];
+      final val = r[j];
+
+      m[originalKey] = val; // original
+      if (normalizedKey.isNotEmpty) m[normalizedKey] = val; // normalized
+    }
+    out.add(m);
+  }
+
+  // One-time debug of keys
+  if (out.isNotEmpty) {
+    // ignore: avoid_print
+    print('[CSV keys] originals=$rawHeader, normalized=$headerNorm');
+  }
+  return out;
+}

@@ -1,0 +1,37 @@
+name: divergent_alliance
+description: Divergent Alliance app
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  url_launcher: ^6.3.0
+  http: ^1.5.0
+  path_provider: ^2.1.4
+  share_plus: ^10.0.2
+  csv: ^6.0.0
+  flutter_svg: ^2.0.10
+  fl_chart: ^0.69.0
+  permission_handler: ^11.3.1
+
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  dependencies:
+    http: ^1.2.2
+
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/Background.png
+    - assets/docs/divergent_company_profile.pdf
+    - assets/spp/spp_rules.json
+    - assets/spp/sample_counties.json
