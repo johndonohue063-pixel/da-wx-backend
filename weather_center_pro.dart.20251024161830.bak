@@ -1,0 +1,149 @@
+import "package:flutter/material.dart";
+import "../services/nws_client.dart";
+import "../services/crew_logic.dart";
+
+class WeatherCenterPro extends StatefulWidget{
+  const WeatherCenterPro({super.key});
+  @override State<WeatherCenterPro> createState()=>_WeatherCenterProState();
+}
+class _WeatherCenterProState extends State<WeatherCenterPro>{
+  static const Color brandOrange=Color(0xFFFF6A00), glass=Color(0xCC101214);
+  bool _loading=true; String? _error; List<Map<String,dynamic>> _rows=[];
+  int _dayOffset=0;
+
+  final List<Map<String,dynamic>> _points=const [
+    {"County":"Harris","State":"TX","lat":29.7752,"lon":-95.3103,"Population":4700000,"Cluster":"Gulf"},
+    {"County":"Cook","State":"IL","lat":41.84,"lon":-87.68,"Population":5100000,"Cluster":"Midwest"},
+    {"County":"Duval","State":"FL","lat":30.33,"lon":-81.65,"Population":1000000,"Cluster":"Atlantic"},
+    {"County":"Horry","State":"SC","lat":33.92,"lon":-78.98,"Population":380000,"Cluster":"Carolinas"},
+    {"County":"Wake","State":"NC","lat":35.78,"lon":-78.64,"Population":1120000,"Cluster":"Carolinas"},
+    {"County":"Norfolk","State":"VA","lat":36.85,"lon":-76.29,"Population":240000,"Cluster":"Tidewater"},
+  ];
+
+  @override void initState(){super.initState(); _fetch();}
+
+  Future<void> _fetch() async{
+    setState(()=>_loading=true); try{
+      final base=await NwsClient.nationalWind(points:_points,hours:24,concurrency:6);
+      final fixed=base.map((r){
+        final s=(r["Max Sustained (mph)"]??0).toDouble();
+        final g=(r["Max Gust (mph)"]??0).toDouble();
+        final pop=(r["Population"]??0) is int ? r["Population"] : int.tryParse("${r["Population"]}")??0;
+        final metrics = CrewLogic.compute(sustainedMph:s,gustMph:g,population:pop);
+        return {...r, ...metrics};
+      }).toList();
+      if(!mounted) return; setState(()=>{_rows=fixed,_loading=false,_error=null});
+      // print for sanity
+      // ignore: avoid_print
+      print("[NWS] rows=${fixed.length}  ex: ${fixed.first}");
+    }catch(e){ if(!mounted) return; setState(()=>{_loading=false,_error="NWS fetch failed: $e",_rows=[]}); }
+  }
+
+  @override Widget build(BuildContext context){
+    return Scaffold(
+      backgroundColor:Colors.black,
+      appBar:AppBar(backgroundColor:Colors.black,elevation:0,title:const Text("Weather Center"),actions:[
+        IconButton(onPressed:_fetch, icon:const Icon(Icons.refresh, color:Colors.white70)),
+      ]),
+      body: ListView(padding:const EdgeInsets.fromLTRB(12,8,12,16), children:[
+        _section("Threshold", _thresholdUI()),
+        _section("Operational summary", _summary()),
+        if(_loading) _section(null, _loadingList())
+        else if(_error!=null) _section(null, _errorPane(_error!))
+        else _section("Live NWS wind by county", _list()),
+      ]),
+    );
+  }
+
+  Widget _section(String? title, Widget child)=>Container(
+    margin:const EdgeInsets.symmetric(vertical:8), padding:const EdgeInsets.all(12),
+    decoration:BoxDecoration(color:glass,borderRadius:BorderRadius.circular(16),
+      border:Border.all(color:brandOrange.withOpacity(0.35))),
+    child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+      if(title!=null) Padding(padding:const EdgeInsets.fromLTRB(4,0,0,8),
+        child:Text(title,style:const TextStyle(color:Colors.white70,fontWeight:FontWeight.w600))),
+      child,
+    ]));
+
+  Widget _thresholdUI()=>Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+    Align(alignment:Alignment.centerRight, child:Text("D$_dayOffset",style:const TextStyle(color:Colors.white70))),
+    Slider(value:19,min:5,max:60,onChanged:(_){},activeColor:brandOrange,inactiveColor:Colors.white24),
+  ]);
+
+  Widget _summary(){
+    double avg<T>(double Function(Map<String,dynamic>) f)=> _rows.isEmpty?0:_rows.map(f).reduce((a,b)=>a+b)/_rows.length;
+    final aS=avg((r)=> (r["Max Sustained (mph)"]??0).toDouble());
+    final aG=avg((r)=> (r["Max Gust (mph)"]??0).toDouble());
+    final crews=_rows.fold<int>(0,(a,r)=>a+((r["Suggested Crews"]??0) as int));
+    final inc=_rows.fold<int>(0,(a,r)=>a+((r["Predicted Incidents"]??0) as int));
+    final cust=_rows.fold<int>(0,(a,r)=>a+((r["Predicted Customers Out"]??0) as int));
+    return Wrap(spacing:8,runSpacing:8,children:[
+      _badge(Icons.air, "${aS.toStringAsFixed(0)} mph sustained avg"),
+      _badge(Icons.flash_on, "${aG.toStringAsFixed(0)} mph gust avg"),
+      _badge(Icons.groups_2, "$crews crews"),
+      _badge(Icons.report, "$inc incidents"),
+      _badge(Icons.power, "${_fmt(cust)} customers out"),
+    ]);
+  }
+
+  Widget _list()=>Column(children:_rows.map((r)=>Padding(
+    padding:const EdgeInsets.only(bottom:10),
+    child:Container(decoration:BoxDecoration(
+      color:Colors.white.withOpacity(0.04),borderRadius:BorderRadius.circular(16),
+      border:Border.all(color:brandOrange.withOpacity(0.35))),
+      padding:const EdgeInsets.fromLTRB(10,10,10,12),
+      child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+        Row(children:[
+          Expanded(child:Text("${r["County"]}, ${r["State"]}",style:const TextStyle(fontWeight:FontWeight.w700,fontSize:16))),
+          _chip("${r["Threat Level"]}", _threatColor("${r["Threat Level"]}")),
+        ]),
+        const SizedBox(height:8),
+        Wrap(spacing:8,runSpacing:8,children:[
+          _badge(Icons.air, "${(r["Max Sustained (mph)"]??0).toStringAsFixed(0)} mph sustained"),
+          _badge(Icons.flash_on, "${(r["Max Gust (mph)"]??0).toStringAsFixed(0)} mph gust"),
+          _badge(Icons.groups_2, "${r["Suggested Crews"]} crews"),
+          _badge(Icons.report, "${r["Predicted Incidents"]} incidents"),
+          _badge(Icons.power, "${_fmt(r["Predicted Customers Out"]??0)} out"),
+          if("${r["NWS Grid"]}".isNotEmpty) _badge(Icons.grid_4x4, "${r["NWS Grid"]}"),
+        ]),
+      ])))).toList());
+
+  Color _threatColor(String t){final s=t.toLowerCase().trim();
+    if(s.contains("3")) return Colors.redAccent;
+    if(s.contains("2")) return Colors.orangeAccent;
+    if(s.contains("1")) return Colors.yellowAccent;
+    return Colors.lightGreenAccent;
+  }
+
+  String _fmt(int n){final s="$n";final b=StringBuffer(); for(int i=0;i<s.length;i++){
+    b.write(s[i]); final left=s.length-1-i; if(left>0 && left%3==0) b.write(","); } return b.toString(); }
+
+  Widget _badge(IconData i,String t)=>Container(
+    padding:const EdgeInsets.symmetric(horizontal:10,vertical:8),
+    decoration:BoxDecoration(color:Colors.white.withOpacity(0.06),
+      border:Border.all(color:brandOrange.withOpacity(0.35)),borderRadius:BorderRadius.circular(12)),
+    child:Row(mainAxisSize:MainAxisSize.min,children:[Icon(i,size:16,color:brandOrange),const SizedBox(width:6),Text(t,style:const TextStyle(fontSize:13))]));
+
+  Widget _chip(String label, Color c) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: c.withOpacity(0.15),
+      border: Border.all(color: c.withOpacity(0.8)),
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(label, style: TextStyle(color: c, fontWeight: FontWeight.w700)),
+  );
+}
+
+Widget _loadingList()=>Column(children:List.generate(5,(_)=>Container(
+    height:70,margin:const EdgeInsets.only(bottom:10),
+    decoration:BoxDecoration(color:Colors.white.withOpacity(0.06),
+      borderRadius:BorderRadius.circular(16),border:Border.all(color:brandOrange.withOpacity(0.35))))));
+
+  Widget _errorPane(String m)=>Column(children:[
+    const Icon(Icons.warning_amber_rounded,color:Colors.amber,size:26),
+    const SizedBox(height:8), Text(m,textAlign:TextAlign.center,style:const TextStyle(fontWeight:FontWeight.w600)),
+    const SizedBox(height:10), TextButton.icon(onPressed:_fetch,icon:const Icon(Icons.refresh),label:const Text("Try again")),
+  ]);
+}

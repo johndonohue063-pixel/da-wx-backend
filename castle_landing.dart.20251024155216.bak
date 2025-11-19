@@ -1,0 +1,30 @@
+import "package:flutter/material.dart";
+import "../ui/da_button.dart";
+import "../widgets/spark_title.dart";
+import "weather_center_pro.dart";
+
+class CastleLanding extends StatelessWidget{
+  const CastleLanding({super.key});
+  @override Widget build(BuildContext context){
+    return Scaffold(
+      backgroundColor:Colors.black,
+      appBar:AppBar(backgroundColor:Colors.black,elevation:0,title:SparkTitle(text:"Divergent Alliance")),
+      body: ListView(padding:const EdgeInsets.fromLTRB(16,20,16,20), children:[
+        const SizedBox(height:6),
+        const Text("Storm Response • Material Supply • Utility R&D",
+          textAlign:TextAlign.center,style:TextStyle(color:Colors.white70)),
+        const SizedBox(height:20),
+        Row(children:[
+          Expanded(child:DAButton(label:"Nationwide",icon:Icons.public,onPressed:(){})),
+          const SizedBox(width:10),
+          Expanded(child:DAButton(label:"Region",icon:Icons.map_outlined,outline:true,onPressed:(){})),
+          const SizedBox(width:10),
+          Expanded(child:DAButton(label:"State",icon:Icons.flag_outlined,outline:true,onPressed:(){})),
+        ]),
+        const SizedBox(height:28),
+        DAButton(label:"Weather Center",icon:Icons.bolt,
+          onPressed:()=>Navigator.of(context).push(MaterialPageRoute(builder:(_)=>const WeatherCenterPro()))),
+      ]),
+    );
+  }
+}

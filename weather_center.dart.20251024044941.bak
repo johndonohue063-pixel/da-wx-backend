@@ -1,0 +1,92 @@
+import 'package:flutter/material.dart';
+import '../ui/da_button.dart';
+import '../pages/weather_results.dart';
+
+/// Keep the old route working: if your routes map uses `WeatherCenter.route`,
+/// this wrapper preserves that without any other code changes.
+class WeatherCenter extends StatelessWidget {
+  static const route = '/weather';
+  const WeatherCenter({super.key});
+  @override
+  Widget build(BuildContext context) => const WeatherCenterScreen();
+}
+
+/// Your simplified Weather Center screen
+class WeatherCenterScreen extends StatefulWidget {
+  const WeatherCenterScreen({super.key});
+
+  @override
+  State<WeatherCenterScreen> createState() => _WeatherCenterScreenState();
+}
+
+class _WeatherCenterScreenState extends State<WeatherCenterScreen> {
+  void _run() {
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => WeatherResults(
+            region: region,
+            state: state,
+            isNationwide: (region == "Nationwide"),
+            minWindMph: 10,
+            daysOut: 7,
+            threatFilter: "Any",
+          ),
+        ));
+  }
+
+  String region = "Nationwide";
+  String state = "Texas";
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Weather Center")),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Region",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: region,
+              items: const [
+                DropdownMenuItem(
+                    value: "Nationwide", child: Text("Nationwide")),
+                DropdownMenuItem(value: "Southeast", child: Text("Southeast")),
+                DropdownMenuItem(value: "Northeast", child: Text("Northeast")),
+                DropdownMenuItem(value: "Midwest", child: Text("Midwest")),
+              ],
+              onChanged: (v) => setState(() => region = v ?? region),
+            ),
+            const SizedBox(height: 16),
+            const Text("State",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: state,
+              items: const [
+                DropdownMenuItem(value: "Texas", child: Text("Texas")),
+                DropdownMenuItem(value: "Florida", child: Text("Florida")),
+                DropdownMenuItem(
+                    value: "North Carolina", child: Text("North Carolina")),
+                DropdownMenuItem(value: "Virginia", child: Text("Virginia")),
+              ],
+              onChanged: (v) => setState(() => state = v ?? state),
+            ),
+            const Spacer(),
+            // Your image-skinned plate button (DABtn)
+            SizedBox(
+              width: double.infinity,
+              child: DABtn(
+                label: "Run Forecast",
+                icon: Icons.analytics,
+                onPressed: _run,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

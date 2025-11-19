@@ -1,0 +1,18 @@
+import 'package:flutter/material.dart';
+
+class WeatherCenterPro extends StatelessWidget {
+  const WeatherCenterPro({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: const AppBar(title: Text('Weather Center (Pro)')),
+      body: const Center(
+        child: Text(
+          'WeatherCenterPro is routed correctly.\nReplace this body with your full UI.',
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+}

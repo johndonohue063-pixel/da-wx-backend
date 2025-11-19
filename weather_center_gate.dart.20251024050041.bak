@@ -1,0 +1,14 @@
+import 'package:flutter/material.dart';
+import './weather_center.dart';
+import '../security/pin_gate.dart';
+import 'weather_center.dart';
+
+class WeatherCenterGate extends StatelessWidget {
+  static const route = '/weather';
+  const WeatherCenterGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return PinGate(protectedChild: const WeatherCenter());
+  }
+}

@@ -1,0 +1,111 @@
+import "package:flutter/material.dart";
+import "../ui/da_button.dart";
+import "../widgets/spark_title.dart";
+import "weather_center_pro.dart";
+import "shop_hub.dart";
+
+class CastleLanding extends StatelessWidget {
+  const CastleLanding({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(children:[
+          Positioned.fill(child: Image.asset("assets/images/Background.png", fit: BoxFit.cover, errorBuilder: (c,_,__) => Container(color: Colors.black))),
+          // Truck hero background
+          Positioned.fill(
+            child: Image.asset(
+              "assets/images/TRUCK_HERO.png", // change if your filename differs
+              fit: BoxFit.cover,
+            ),
+          ),
+          // Dark top-to-bottom gradient for legibility
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    Colors.black.withOpacity(0.78),
+                    Colors.black.withOpacity(0.50),
+                    Colors.black.withOpacity(0.85),
+                  ],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+              ),
+            ),
+          ),
+
+          // Foreground content
+          SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              children: [
+                // Cinematic brand title
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 8),
+                  child: SparkTitle(text: "Divergent Alliance"),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  "Storm Response \u2022 Material Supply \u2022 Utility R&D",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Filter row (Nationwide / Region / State)
+                Row(
+                  children: [
+                    Expanded(
+                      child: DAButton(
+                        label: "Nationwide", icon: Icons.public, onPressed: () {},
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DAButton(
+                        label: "Region", icon: Icons.map_outlined, outline: true, onPressed: () {},
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: DAButton(
+                        label: "State", icon: Icons.flag_outlined, outline: true, onPressed: () {},
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+
+                // Primary CTAs
+                DAButton(
+                  label: "Weather Center",
+                  icon: Icons.bolt,
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const WeatherCenterPro()),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                DAButton(
+                  label: "Shop",
+                  icon: Icons.store_mall_directory_outlined,
+                  outline: true,
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ShopHubScreen()),
+                  ),
+                ),
+
+                // Spacer area to show more of the hero image
+                const SizedBox(height: 32),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

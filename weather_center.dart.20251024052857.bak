@@ -1,0 +1,481 @@
+import 'package:flutter/material.dart';
+import '../ui/da_button.dart';
+import '../screens/weather_center_gate.dart';
+
+class WeatherCenter extends StatefulWidget {
+  static const route = '/weather-center';
+  const WeatherCenter({super.key});
+  @override
+  State<WeatherCenter> createState() => _WeatherCenterState();
+}
+
+class _WeatherCenterState extends State<WeatherCenter> {
+  // ----- Scope cascade -----
+  final Map<String, List<String>> regionStates = {
+    'Gulf': ['Texas', 'Louisiana', 'Mississippi', 'Alabama', 'Florida'],
+    'Southeast': [
+      'Florida',
+      'Georgia',
+      'South Carolina',
+      'North Carolina',
+      'Tennessee',
+      'Alabama',
+      'Mississippi'
+    ],
+    'East Coast': [
+      'Florida',
+      'Georgia',
+      'South Carolina',
+      'North Carolina',
+      'Virginia',
+      'Maryland',
+      'Delaware',
+      'New Jersey',
+      'New York',
+      'Connecticut',
+      'Rhode Island',
+      'Massachusetts'
+    ],
+    'Midwest': [
+      'Illinois',
+      'Indiana',
+      'Ohio',
+      'Michigan',
+      'Wisconsin',
+      'Minnesota',
+      'Missouri',
+      'Iowa'
+    ],
+    'West': [
+      'California',
+      'Oregon',
+      'Washington',
+      'Nevada',
+      'Arizona',
+      'Utah',
+      'Colorado',
+      'New Mexico'
+    ],
+  };
+
+  String region = 'Nationwide';
+  String? stateSel;
+
+  // ----- Forecast controls -----
+  int daysOut = 0; // 0..10
+  double probability = 35; // wind outage probability %
+  bool crewsEstimate = true;
+
+  @override
+  void initState() {
+    super.initState();
+    // Hard guard: require PIN once per app session.
+    if (WeatherCenterGate.authorized != true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.pushReplacementNamed(context, WeatherCenterGate.route);
+      });
+    }
+  }
+
+  List<String> currentStates() =>
+      region == 'Nationwide' ? const [] : (regionStates[region] ?? const []);
+
+  // ----- Threat logic (wind-first) -----
+  int threatLevel(double p) {
+    if (p >= 45) return 3;
+    if (p >= 30) return 2;
+    if (p >= 20) return 1;
+    return 0;
+  }
+
+  String threatLabel(int lvl) => switch (lvl) {
+        3 => 'Level 3',
+        2 => 'Level 2',
+        1 => 'Level 1',
+        _ => 'Level 0'
+      };
+  Color threatColor(int lvl) => switch (lvl) {
+        3 => const Color(0xFFB00020), // crimson
+        2 => const Color(0xFFFF6A00), // DA orange
+        1 => const Color(0xFFFFC107), // amber
+        _ => const Color(0xFF64B5F6), // calm blue
+      };
+
+  // ----- Crew estimator (wind, scope-tuned) -----
+  // State:  L1=10, L2=30, L3=60
+  // Region: L1=50, L2=150, L3=300
+  // Nation: L1=100, L2=300, L3=600
+  int estimateCrews(double p) {
+    final lvl = threatLevel(p);
+    String scope = 'Nationwide';
+    if (region != 'Nationwide') scope = 'Region';
+    if (stateSel != null) scope = 'State';
+    final base = switch (scope) {
+      'State' => [0, 10, 30, 60],
+      'Region' => [0, 50, 150, 300],
+      _ => [0, 100, 300, 600],
+    };
+    return base[lvl];
+  }
+
+  // ----- Synthetic “Top Counties” preview for bar mini-chart (UI demo without backend) -----
+  List<Map<String, dynamic>> topCountiesPreview() {
+    // Use a tiny deterministic list so UI renders a chart. Replace with your SPP data when wired.
+    final seed = stateSel ?? region;
+    final base = <String>[
+      'Coastal A',
+      'Coastal B',
+      'Metro C',
+      'Rural D',
+      'Rural E',
+      'Hwy F',
+      'Valley G',
+      'Bay H',
+      'Hill I',
+      'Delta J'
+    ];
+    final mult = 200 + daysOut * 20;
+    return List.generate(6, (i) {
+      final pct = probability / 100.0;
+      final out = (mult * pct * (1.0 + i * .12)).round();
+      return {'name': ' ()', 'out': out};
+    });
+  }
+
+  String stagingSuggestion() {
+    if (stateSel != null) {
+      return 'Stage near:  logistics hub • position 1 crew base west, 1 east.';
+    }
+    if (region != 'Nationwide') {
+      return 'Stage on  perimeter • pre-position scout crews along major corridors.';
+    }
+    return 'Nationwide posture • hold rapid-deploy strike teams at Tier-1 airports.';
+  }
+
+  void _run() {
+    final lvl = threatLevel(probability);
+    final crews = crewsEstimate ? estimateCrews(probability) : 0;
+    final scope = stateSel ?? region;
+    final msg = 'Scope: ' +
+        (region == 'Nationwide' ? 'Nationwide' : scope) +
+        ' • Days out: ' +
+        daysOut.toString() +
+        ' • Wind %: ' +
+        probability.toStringAsFixed(0) +
+        ' • ' +
+        threatLabel(lvl) +
+        ' • Crews: ' +
+        crews.toString();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lvl = threatLevel(probability);
+    final states = currentStates();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Weather Center'),
+        actions: [
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: threatColor(lvl).withOpacity(.18),
+              border: Border.all(color: threatColor(lvl), width: 1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(children: [
+              const Icon(Icons.bolt_rounded, size: 16),
+              const SizedBox(width: 6),
+              Text(threatLabel(lvl),
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ]),
+          )
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // ---- Scope row ----
+            Row(children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: region,
+                  decoration:
+                      const InputDecoration(labelText: 'Scope / Region'),
+                  items: [
+                    const DropdownMenuItem(
+                        value: 'Nationwide', child: Text('Nationwide')),
+                    ...regionStates.keys
+                        .map((r) => DropdownMenuItem(value: r, child: Text(r))),
+                  ],
+                  onChanged: (v) => setState(() {
+                    region = v ?? 'Nationwide';
+                    stateSel = null;
+                  }),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: stateSel,
+                  decoration: const InputDecoration(labelText: 'State'),
+                  items: states
+                      .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+                      .toList(),
+                  onChanged: states.isEmpty
+                      ? null
+                      : (v) => setState(() => stateSel = v),
+                  disabledHint: const Text('—'),
+                ),
+              ),
+            ]),
+
+            const SizedBox(height: 12),
+
+            // ---- Days out slider ----
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Days out'),
+                      Slider(
+                        min: 0,
+                        max: 10,
+                        divisions: 10,
+                        value: daysOut.toDouble(),
+                        label: daysOut.toString(),
+                        onChanged: (v) => setState(() => daysOut = v.round()),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 64,
+                  child: Text('d',
+                      textAlign: TextAlign.end,
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
+            // ---- Glass cards row: Threat, Crews, Staging ----
+            LayoutBuilder(builder: (ctx, c) {
+              final isNarrow = c.maxWidth < 540;
+              final cards = <Widget>[
+                _InfoCard(
+                  title: 'Threat',
+                  body: threatLabel(lvl),
+                  accent: threatColor(lvl),
+                  subtitle: 'Wind outage risk',
+                ),
+                _InfoCard(
+                  title: 'Suggested Crews',
+                  body: crewsEstimate ? '' : '—',
+                  accent: const Color(0xFFFF6A00),
+                  subtitle: crewsEstimate
+                      ? 'Based on scope & %'
+                      : 'Turn on estimator',
+                ),
+                _InfoCard(
+                  title: 'Staging',
+                  body: stateSel ?? region,
+                  accent: Colors.tealAccent.shade700,
+                  subtitle: stagingSuggestion(),
+                ),
+              ];
+              if (isNarrow) {
+                return Column(
+                    children: cards
+                        .map((w) => Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: w))
+                        .toList());
+              } else {
+                return Row(
+                    children: cards
+                        .map((w) => Expanded(
+                            child: Padding(
+                                padding: const EdgeInsets.only(right: 12),
+                                child: w)))
+                        .toList())
+                  ..children.last = Expanded(
+                      child:
+                          Padding(padding: EdgeInsets.zero, child: cards.last));
+              }
+            }),
+
+            const SizedBox(height: 12),
+
+            // ---- Wind probability + toggle ----
+            Align(
+                alignment: Alignment.centerLeft,
+                child: Text('Wind Outage Probability: %')),
+            Slider(
+                min: 0,
+                max: 100,
+                divisions: 100,
+                value: probability,
+                onChanged: (v) => setState(() => probability = v)),
+
+            CheckboxListTile(
+              value: crewsEstimate,
+              onChanged: (v) =>
+                  setState(() => crewsEstimate = v ?? crewsEstimate),
+              title: const Text('Estimate Crews (wind)'),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+
+            const SizedBox(height: 6),
+
+            // ---- Mini bar preview card ----
+            _BarPreviewCard(items: topCountiesPreview()),
+
+            const SizedBox(height: 16),
+
+            SizedBox(
+              width: double.infinity,
+              child: DAButton(
+                  label: 'Run Forecast',
+                  icon: Icons.analytics,
+                  onPressed: _run),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===== Support widgets =====
+
+class _InfoCard extends StatelessWidget {
+  const _InfoCard(
+      {required this.title,
+      required this.body,
+      required this.accent,
+      required this.subtitle});
+  final String title;
+  final String body;
+  final Color accent;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(.08)),
+        boxShadow: const [
+          BoxShadow(
+              blurRadius: 22,
+              spreadRadius: -6,
+              offset: Offset(0, 10),
+              color: Colors.black54)
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title,
+            style: const TextStyle(fontSize: 12, color: Colors.white70)),
+        const SizedBox(height: 6),
+        Row(children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: accent, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(body,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 6),
+        Text(subtitle,
+            style: const TextStyle(fontSize: 12, color: Colors.white60)),
+      ]),
+    );
+  }
+}
+
+class _BarPreviewCard extends StatelessWidget {
+  const _BarPreviewCard({required this.items});
+  final List<Map<String, dynamic>> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(.08)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: const [
+          Icon(Icons.bar_chart, size: 16),
+          SizedBox(width: 6),
+          Text('Top impact areas (preview)',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 140,
+          child: CustomPaint(painter: _MiniBarPainter(items)),
+        ),
+      ]),
+    );
+  }
+}
+
+class _MiniBarPainter extends CustomPainter {
+  _MiniBarPainter(this.items);
+  final List<Map<String, dynamic>> items;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bars = items.take(6).toList();
+    if (bars.isEmpty) return;
+    final maxOut = bars
+        .map((e) => e['out'] as int)
+        .reduce((a, b) => a > b ? a : b)
+        .toDouble();
+    final barW = size.width / (bars.length * 1.6);
+    final paint = Paint()..isAntiAlias = true;
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+
+    for (int i = 0; i < bars.length; i++) {
+      final x = (i * 1.6 + .3) * barW;
+      final h = maxOut == 0
+          ? 0
+          : (bars[i]['out'] as int) / maxOut * (size.height - 28);
+      final r = RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, size.height - h - 18, barW, h),
+          const Radius.circular(6));
+      // DA orange gradient
+      final shader =
+          const LinearGradient(colors: [Color(0xFFFFB15A), Color(0xFFFF6A00)])
+              .createShader(r.outerRect);
+      paint..shader = shader;
+      canvas.drawRRect(r, paint);
+      // label (tiny)
+      final label = TextSpan(
+          text: '',
+          style: const TextStyle(fontSize: 10, color: Colors.white70));
+      textPainter.text = label;
+      textPainter.layout(minWidth: 0, maxWidth: barW * 1.5);
+      textPainter.paint(canvas, Offset(x - 2, size.height - 16));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}

@@ -1,0 +1,496 @@
+import 'package:flutter/material.dart';
+import 'package:divergent_alliance/services/wx_api.dart';
+
+/// Region → State → County drilldown with KPI tiles and input guardrails.
+class WeatherCenterPro extends StatefulWidget {
+  const WeatherCenterPro({super.key});
+  @override
+  State<WeatherCenterPro> createState() => _WeatherCenterProState();
+}
+
+class _WeatherCenterProState extends State<WeatherCenterPro> {
+  String _region = 'National';
+  String? _state;
+  int _windMph = 35; // clamped 20..120
+  int _daysOut = 2; // 0..10
+
+  bool _loading = false;
+  String? _error;
+  final Map<String, _RegionAgg> _regions = {};
+  _SortKey _sort = _SortKey.topProb;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = Theme.of(context).brightness == Brightness.dark
+        ? const Color(0xFF0E0E0F)
+        : const Color(0xFFF7F6F6);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Divergent Weather Center')),
+      body: Container(
+        color: bg,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            _filters(),
+            const SizedBox(height: 12),
+            _actions(),
+            if (_loading) ...[
+              const SizedBox(height: 24),
+              const Center(child: CircularProgressIndicator()),
+            ] else if (_error != null) ...[
+              _errorCard(_error!),
+            ] else ...[
+              _summary(),
+              const SizedBox(height: 8),
+              _sortChips(),
+              const SizedBox(height: 8),
+              _regionList(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---------------- UI ----------------
+  Widget _filters() {
+    return Wrap(
+      spacing: 12,
+      runSpacing: 12,
+      children: [
+        _field(
+            'Region',
+            DropdownButton<String>(
+              value: _region,
+              isExpanded: true,
+              items: const [
+                DropdownMenuItem(value: 'National', child: Text('National')),
+                DropdownMenuItem(value: 'East', child: Text('East')),
+                DropdownMenuItem(value: 'Central', child: Text('Central')),
+                DropdownMenuItem(value: 'West', child: Text('West')),
+              ],
+              onChanged: (v) {
+                setState(() => _region = v ?? 'National');
+              },
+            )),
+        _field(
+            'State (optional)',
+            TextField(
+              controller: TextEditingController(text: _state ?? ''),
+              decoration: const InputDecoration(hintText: 'e.g., FL'),
+              onSubmitted: (v) {
+                setState(() =>
+                    _state = v.trim().isEmpty ? null : v.trim().toUpperCase());
+              },
+            )),
+        _field(
+            'Wind mph ≥',
+            TextField(
+              controller: TextEditingController(text: '$_windMph'),
+              keyboardType: TextInputType.number,
+              onSubmitted: (v) {
+                final n = int.tryParse(v) ?? _windMph;
+                setState(() => _windMph = _clampWind(n));
+              },
+            )),
+        _field(
+            'Days out',
+            TextField(
+              controller: TextEditingController(text: '$_daysOut'),
+              keyboardType: TextInputType.number,
+              onSubmitted: (v) {
+                final n = int.tryParse(v) ?? _daysOut;
+                setState(() => _daysOut = n.clamp(0, 10));
+              },
+            )),
+      ],
+    );
+  }
+
+  Widget _actions() {
+    return Row(
+      children: [
+        Expanded(child: _cta(Icons.play_arrow_rounded, 'Run Report', _run)),
+        const SizedBox(width: 12),
+        Expanded(child: _cta(Icons.download_rounded, 'Export CSV', _export)),
+      ],
+    );
+  }
+
+  Widget _summary() {
+    final t = _totals();
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        _pill('Region', _region),
+        if (_state != null) _pill('State', _state!),
+        _pill('Wind ≥', '${_clampWind(_windMph)} mph'),
+        _pill('Days', '$_daysOut'),
+        _pill('Top prob', '${t.topProb.toStringAsFixed(0)}%'),
+        _pill('Pred. out', _fmtInt(t.totalCustomers)),
+      ],
+    );
+  }
+
+  Widget _sortChips() {
+    Widget chip(String label, _SortKey key) => ChoiceChip(
+          label: Text(label),
+          selected: _sort == key,
+          onSelected: (_) {
+            setState(() => _sort = key);
+          },
+        );
+    return Wrap(
+      spacing: 8,
+      children: [
+        chip('Top prob', _SortKey.topProb),
+        chip('Pred out', _SortKey.customers),
+        chip('States', _SortKey.states),
+      ],
+    );
+  }
+
+  Widget _regionList() {
+    final items = _regions.values.toList();
+    items.sort((a, b) {
+      switch (_sort) {
+        case _SortKey.topProb:
+          return (b.maxProb ?? 0).compareTo(a.maxProb ?? 0);
+        case _SortKey.customers:
+          return b.totalCustomers.compareTo(a.totalCustomers);
+        case _SortKey.states:
+          return b.states.length.compareTo(a.states.length);
+      }
+    });
+    return Column(children: [for (final r in items) _regionTile(r)]);
+  }
+
+  Widget _regionTile(_RegionAgg r) {
+    return Card(
+      elevation: 1.5,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: ExpansionTile(
+        title: Row(children: [
+          _badge(r.code),
+          const SizedBox(width: 12),
+          _kpi('% Prob', '${(r.maxProb ?? 0).toStringAsFixed(0)}%'),
+          const SizedBox(width: 6),
+          _kpi('Cust', _fmtInt(r.totalCustomers)),
+        ]),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        children: [for (final s in r.states.values) _stateTile(s)],
+      ),
+    );
+  }
+
+  Widget _stateTile(_StateAgg s) {
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(top: 8),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        title: Row(children: [
+          _badge(s.code),
+          const SizedBox(width: 12),
+          _kpi('% Prob', '${(s.maxProb ?? 0).toStringAsFixed(0)}%'),
+          const SizedBox(width: 6),
+          _kpi('Cust', _fmtInt(s.totalCustomers)),
+        ]),
+        childrenPadding: const Insets.only(left: 12, right: 12, bottom: 12),
+        children: [for (final c in s.counties) _countyTile(c)],
+      ),
+    );
+  }
+
+  Widget _countyTile(Map row) {
+    final county =
+        (_pick(row, ['county', 'county_name', 'County'], '—')).toString();
+    final prob = _toDouble(_pick(row, [
+          'wind_outage_probability',
+          'prob',
+          'Wind Outage Probability %'
+        ])) ??
+        0;
+    final cust = _toDouble(_pick(row, [
+          'predicted_customers_out',
+          'customers_out',
+          'customers',
+          'Predicted Customers Out'
+        ])) ??
+        0;
+    final threat =
+        (_pick(row, ['threat_level', 'threat', 'Threat Level'], '') ?? '')
+            .toString();
+
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.bolt),
+      title: Text(county),
+      subtitle: threat.isEmpty ? null : Text(threat),
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text('${prob.toStringAsFixed(0)}%'),
+          Text(_fmtInt(cust.round())),
+        ],
+      ),
+    );
+  }
+
+  // ---------------- Actions / Data ----------------
+  Future<void> _run() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final region = _region.toLowerCase();
+      final state = _state;
+      final wind = _clampWind(_windMph);
+      final horizon = 48;
+
+      List<Map<String, dynamic>> rows = const [];
+      try {
+        rows = await WxApi.nationalSmart(
+            region: region,
+            state: state,
+            windMph: wind,
+            horizonHours: horizon,
+            maxZones: 100);
+      } catch (_) {
+        // TODO: If your API uses a different method, call it here.
+        // rows = await WxApi.nationalCsv(region: region, state: state, windMph: wind, horizonHours: horizon);
+      }
+
+      if (rows.isEmpty) {
+        rows = _demo();
+      }
+      _rebuild(rows);
+      setState(() {
+        _loading = false;
+      });
+    } catch (e) {
+      _rebuild(_demo());
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  void _export() {
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Export not wired (placeholder)')));
+  }
+
+  // ---------------- Aggregation ----------------
+  void _rebuild(List<Map<String, dynamic>> rows) {
+    _regions.clear();
+    for (final r in rows) {
+      final region =
+          (_pick(r, ['region', 'Region'], 'national').toString()).toUpperCase();
+      final state = (_pick(r, ['state', 'state_abbr', 'State'], '').toString())
+          .toUpperCase();
+      final ra = _regions.putIfAbsent(region, () => _RegionAgg(region));
+      final sa = ra.states.putIfAbsent(state, () => _StateAgg(state));
+
+      final prob = _toDouble(_pick(r, [
+            'wind_outage_probability',
+            'prob',
+            'Wind Outage Probability %'
+          ])) ??
+          0;
+      final cust = _toDouble(_pick(r, [
+            'predicted_customers_out',
+            'customers_out',
+            'customers',
+            'Predicted Customers Out'
+          ])) ??
+          0;
+
+      if (ra.maxProb == null || prob > ra.maxProb!) ra.maxProb = prob;
+      if (sa.maxProb == null || prob > sa.maxProb!) sa.maxProb = prob;
+      ra.totalCustomers += cust.round();
+      sa.totalCustomers += cust.round();
+      sa.counties.add(r);
+    }
+  }
+
+  _Totals _totals() {
+    double top = 0;
+    int total = 0;
+    for (final r in _regions.values) {
+      top = (r.maxProb ?? 0) > top ? (r.maxProb ?? 0) : top;
+      total += r.totalCustomers;
+    }
+    return _Totals(top, total);
+  }
+
+  // ---------------- Small helpers ----------------
+  Widget _field(String title, Widget child) {
+    return Container(
+      width: 320,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).brightness == Brightness.dark
+            ? const Color(0xFF1A1A1D)
+            : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF2B2B2E)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 6),
+        child,
+      ]),
+    );
+  }
+
+  Widget _pill(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF38B2B).withOpacity(0.15),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF38B2B)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w700)),
+        Text(v),
+      ]),
+    );
+  }
+
+  Widget _kpi(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF38B2B).withOpacity(0.15),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF38B2B)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Text('$k ', style: const TextStyle(fontWeight: FontWeight.w700)),
+        Text(v),
+      ]),
+    );
+  }
+
+  Widget _errorCard(String msg) {
+    return Card(
+      color: Colors.red.withOpacity(0.1),
+      margin: const EdgeInsets.only(top: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(msg, style: const TextStyle(color: Colors.red)),
+      ),
+    );
+  }
+
+  dynamic _pick(Map row, List<String> keys, [dynamic fallback]) {
+    for (final k in keys) {
+      if (row.containsKey(k) && row[k] != null) return row[k];
+    }
+    return fallback;
+  }
+
+  int _clampWind(int x) {
+    if (x < 20) return 20;
+    if (x > 120) return 120;
+    return x;
+  }
+
+  double? _toDouble(dynamic x) {
+    if (x == null) return null;
+    final s = x.toString().replaceAll('%', '').replaceAll(',', '').trim();
+    return double.tryParse(s);
+  }
+
+  String _fmtInt(num n) {
+    final s = n.round().toString();
+    final b = StringBuffer();
+    for (int i = 0; i < s.length; i++) {
+      final r = s.length - i;
+      b.write(s[i]);
+      if (r > 1 && r % 3 == 1) b.write(',');
+    }
+    return b.toString();
+  }
+
+  List<Map<String, dynamic>> _demo() => [
+        {
+          'region': 'EAST',
+          'state': 'FL',
+          'county': 'DUVAL',
+          'wind_outage_probability': 52,
+          'predicted_customers_out': 14000,
+          'threat_level': 'Level 3'
+        },
+        {
+          'region': 'EAST',
+          'state': 'FL',
+          'county': 'ST JOHNS',
+          'wind_outage_probability': 41,
+          'predicted_customers_out': 9000,
+          'threat_level': 'Level 2'
+        },
+        {
+          'region': 'EAST',
+          'state': 'GA',
+          'county': 'GLYNN',
+          'wind_outage_probability': 31,
+          'predicted_customers_out': 4500,
+          'threat_level': 'Level 1'
+        },
+        {
+          'region': 'EAST',
+          'state': 'SC',
+          'county': 'BEAUFORT',
+          'wind_outage_probability': 24,
+          'predicted_customers_out': 3200,
+          'threat_level': 'Level 1'
+        },
+      ];
+}
+
+enum _SortKey { topProb, customers, states }
+
+class _RegionAgg {
+  _RegionAgg(this.code);
+  final String code;
+  double? maxProb;
+  int totalCustomers = 0;
+  final Map<String, _StateAgg> states = {};
+}
+
+class _StateAgg {
+  _StateAgg(this.code);
+  final String code;
+  double? maxProb;
+  int totalCustomers = 0;
+  final List<Map<String, dynamic>> counties = [];
+}
+
+class _Totals {
+  _Totals(this.topProb, this.totalCustomers);
+  final double topProb;
+  final int totalCustomers;
+}
+
+// Simple alias to avoid rebuilding controllers on every setState from filter fields
+class TextFieldController extends TextEditingController {
+  TextFieldController(String initial) {
+    text = initial;
+  }
+}

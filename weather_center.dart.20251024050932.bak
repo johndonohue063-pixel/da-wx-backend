@@ -1,0 +1,241 @@
+import 'package:flutter/material.dart';
+import '../ui/da_button.dart';
+
+class WeatherCenter extends StatefulWidget {
+  static const route = '/weather-center';
+  const WeatherCenter({super.key});
+
+  @override
+  State<WeatherCenter> createState() => _WeatherCenterState();
+}
+
+class _WeatherCenterState extends State<WeatherCenter> {
+  String region = 'Nationwide';
+  String stateSel = 'Texas';
+  DateTime? startDate;
+  DateTime? endDate;
+
+  bool hazWind = true;
+  bool hazFlood = false;
+  bool hazIce = false;
+
+  double probability = 35; // %
+  bool crewsEstimate = true;
+
+  Future<void> _pickStart() async {
+    final now = DateTime.now();
+    final dt = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 1),
+      initialDate: startDate ?? now,
+    );
+    if (dt != null) setState(() => startDate = dt);
+  }
+
+  Future<void> _pickEnd() async {
+    final base = startDate ?? DateTime.now();
+    final dt = await showDatePicker(
+      context: context,
+      firstDate: DateTime(base.year - 1),
+      lastDate: DateTime(base.year + 1),
+      initialDate: endDate ?? base,
+    );
+    if (dt != null) setState(() => endDate = dt);
+  }
+
+  String _fmt(DateTime? d) => d == null
+      ? 'Select'
+      : '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  void _run() {
+    final hazards = <String>[
+      if (hazWind) 'Wind',
+      if (hazFlood) 'Flood',
+      if (hazIce) 'Ice',
+    ].join(', ');
+    final msg = 'Region: ' +
+        region +
+        ' | State: ' +
+        stateSel +
+        ' | Dates: ' +
+        _fmt(startDate) +
+        ' → ' +
+        _fmt(endDate) +
+        ' | Hazards: ' +
+        hazards +
+        ' | Prob: ' +
+        probability.toStringAsFixed(0) +
+        '%' +
+        ' | Crews: ' +
+        (crewsEstimate ? 'On' : 'Off');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pad = EdgeInsets.symmetric(horizontal: 16, vertical: 8);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Weather Center')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // Row 1: Region, State
+            Row(
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: pad,
+                    child: DropdownButtonFormField<String>(
+                      initialValue: region,
+                      decoration: const InputDecoration(labelText: 'Region'),
+                      items: const [
+                        DropdownMenuItem(
+                            value: 'Nationwide', child: Text('Nationwide')),
+                        DropdownMenuItem(
+                            value: 'Southeast', child: Text('Southeast')),
+                        DropdownMenuItem(value: 'Gulf', child: Text('Gulf')),
+                        DropdownMenuItem(
+                            value: 'East Coast', child: Text('East Coast')),
+                        DropdownMenuItem(
+                            value: 'Midwest', child: Text('Midwest')),
+                        DropdownMenuItem(value: 'West', child: Text('West')),
+                      ],
+                      onChanged: (v) => setState(() => region = v ?? region),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: pad,
+                    child: DropdownButtonFormField<String>(
+                      initialValue: stateSel,
+                      decoration: const InputDecoration(labelText: 'State'),
+                      items: const [
+                        DropdownMenuItem(value: 'Texas', child: Text('Texas')),
+                        DropdownMenuItem(
+                            value: 'Florida', child: Text('Florida')),
+                        DropdownMenuItem(
+                            value: 'Georgia', child: Text('Georgia')),
+                        DropdownMenuItem(
+                            value: 'South Carolina',
+                            child: Text('South Carolina')),
+                        DropdownMenuItem(
+                            value: 'North Carolina',
+                            child: Text('North Carolina')),
+                        DropdownMenuItem(
+                            value: 'Virginia', child: Text('Virginia')),
+                      ],
+                      onChanged: (v) =>
+                          setState(() => stateSel = v ?? stateSel),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            // Row 2: Date range
+            Row(
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: pad,
+                    child: InkWell(
+                      onTap: _pickStart,
+                      child: InputDecorator(
+                        decoration:
+                            const InputDecoration(labelText: 'Start date'),
+                        child: Text(_fmt(startDate)),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: pad,
+                    child: InkWell(
+                      onTap: _pickEnd,
+                      child: InputDecorator(
+                        decoration:
+                            const InputDecoration(labelText: 'End date'),
+                        child: Text(_fmt(endDate)),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            // Row 3: Hazards
+            Padding(
+              padding: pad,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  children: [
+                    FilterChip(
+                      selected: hazWind,
+                      label: const Text('Wind'),
+                      onSelected: (s) => setState(() => hazWind = s),
+                    ),
+                    FilterChip(
+                      selected: hazFlood,
+                      label: const Text('Flood'),
+                      onSelected: (s) => setState(() => hazFlood = s),
+                    ),
+                    FilterChip(
+                      selected: hazIce,
+                      label: const Text('Ice'),
+                      onSelected: (s) => setState(() => hazIce = s),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Row 4: Probability and crews estimate
+            Padding(
+              padding: pad,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Wind Outage Probability: ' +
+                      probability.toStringAsFixed(0) +
+                      '%'),
+                  Slider(
+                    min: 0,
+                    max: 100,
+                    divisions: 100,
+                    value: probability,
+                    onChanged: (v) => setState(() => probability = v),
+                  ),
+                  CheckboxListTile(
+                    value: crewsEstimate,
+                    onChanged: (v) =>
+                        setState(() => crewsEstimate = v ?? crewsEstimate),
+                    title: const Text('Estimate Crews'),
+                    controlAffinity: ListTileControlAffinity.leading,
+                    contentPadding: EdgeInsets.zero,
+                  )
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: DAButton(
+                label: 'Run Forecast',
+                icon: Icons.analytics,
+                onPressed: _run,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

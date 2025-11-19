@@ -1,0 +1,76 @@
+import "package:flutter/material.dart";
+import "../screens/weather_center.dart";
+import "../screens/weather_center_gate.dart";
+import "../ui/da_button.dart";
+
+class CastleLanding extends StatelessWidget {
+  const CastleLanding({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset("assets/images/TRUCK_HERO.png", fit: BoxFit.cover),
+          Container(color: Colors.black.withOpacity(0.60)),
+          Align(
+            alignment: Alignment.center,
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    "Divergent Alliance",
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFFFF6A00),
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    "Storm Response | Material Supply | Utility R&D",
+                    style: TextStyle(color: Colors.white70),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(' ', style: TextStyle(
+                        color: Colors.white60, fontSize: 12.5, height: 1.25),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 48),
+
+                  // Weather Center via PIN gate
+                  SizedBox(
+                    width: 280,
+                    child: DAButton(
+                      label: "Weather Center",
+                      icon: Icons.cloud,
+                      onPressed: () =>
+                          Navigator.pushNamed(context, WeatherCenterGate.route),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Store (dark variant)
+                  SizedBox(
+                    width: 280,
+                    child: DAButton(
+                      label: "Store",
+                      icon: Icons.storefront,
+                      onPressed: () {},
+                      variant: DAButtonVariant.secondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

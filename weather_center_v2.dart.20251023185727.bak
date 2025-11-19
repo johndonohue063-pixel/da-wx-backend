@@ -1,0 +1,287 @@
+import 'package:flutter/material.dart';
+
+typedef ValuePicker = dynamic Function(Map row, List<String> keys,
+    {dynamic fallback});
+
+class DivergentWeatherCenter extends StatefulWidget {
+  const DivergentWeatherCenter({super.key});
+  @override
+  State<DivergentWeatherCenter> createState() => _DivergentWeatherCenterState();
+}
+
+class _DivergentWeatherCenterState extends State<DivergentWeatherCenter> {
+  // Plug real rows later; demo ensures visible layout now
+  final List<Map<String, dynamic>> _rows = const [];
+  late final List<_StateAgg> _aggs;
+
+  @override
+  void initState() {
+    super.initState();
+    _aggs = _rows.isEmpty ? _demoAggs() : _aggregateByState(_rows);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Weather Center v2')),
+      body: _aggs.isEmpty
+          ? const _EmptyState()
+          : ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: _aggs.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 12),
+              itemBuilder: (context, i) => _StateCard(
+                agg: _aggs[i],
+                pick: _pick,
+                probOf: (a) => a.maxProb ?? 0,
+                custOf: (a) => a.totalCustomers,
+              ),
+            ),
+    );
+  }
+
+  dynamic _pick(Map row, List<String> keys, {dynamic fallback}) {
+    for (final k in keys) {
+      if (row.containsKey(k) && row[k] != null) return row[k];
+    }
+    return fallback;
+  }
+
+  List<_StateAgg> _aggregateByState(List<Map<String, dynamic>> rows) {
+    final byState = <String, _StateAgg>{};
+    for (final r in rows) {
+      final state =
+          (_pick(r, ['state', 'State', 'state_abbr']) ?? '').toString();
+      if (state.isEmpty) continue;
+      final s = byState.putIfAbsent(state, () => _StateAgg(state: state));
+
+      final p = double.tryParse((_pick(
+                      r,
+                      [
+                        'wind_outage_probability',
+                        'prob',
+                        'Wind Outage Probability %'
+                      ],
+                      fallback: 0)
+                  .toString())
+              .replaceAll('%', '')
+              .trim()) ??
+          0;
+      if (s.maxProb == null || p > s.maxProb!) s.maxProb = p;
+
+      final c = num.tryParse((_pick(
+                      r,
+                      [
+                        'predicted_customers_out',
+                        'customers_out',
+                        'customers',
+                        'Predicted Customers Out'
+                      ],
+                      fallback: 0)
+                  .toString())
+              .replaceAll(',', '')
+              .trim()) ??
+          0;
+      s.totalCustomers += c;
+
+      s.counties.add(r);
+    }
+    final list = byState.values.toList()
+      ..sort((a, b) => (b.maxProb ?? 0).compareTo(a.maxProb ?? 0));
+    return list;
+  }
+
+  List<_StateAgg> _demoAggs() => [
+        _StateAgg(state: 'FL', maxProb: 48, totalCustomers: 32000, counties: [
+          {
+            'county': 'Duval',
+            'wind_outage_probability': 52,
+            'predicted_customers_out': 14000,
+            'threat_level': 'Level 3'
+          },
+          {
+            'county': 'St. Johns',
+            'wind_outage_probability': 41,
+            'predicted_customers_out': 9000,
+            'threat_level': 'Level 2'
+          },
+        ]),
+        _StateAgg(state: 'GA', maxProb: 34, totalCustomers: 12000, counties: [
+          {
+            'county': 'Glynn',
+            'wind_outage_probability': 31,
+            'predicted_customers_out': 4500,
+            'threat_level': 'Level 1'
+          },
+        ]),
+        _StateAgg(state: 'SC', maxProb: 22, totalCustomers: 6000, counties: [
+          {
+            'county': 'Beaufort',
+            'wind_outage_probability': 24,
+            'predicted_customers_out': 3200,
+            'threat_level': 'Level 1'
+          },
+          {
+            'county': 'Jasper',
+            'wind_outage_probability': 18,
+            'predicted_customers_out': 2800,
+            'threat_level': 'Level 0'
+          },
+        ]),
+      ];
+}
+
+class _StateAgg {
+  _StateAgg({
+    required this.state,
+    this.maxProb,
+    this.totalCustomers = 0,
+    List<Map<String, dynamic>>? counties,
+  }) : counties = counties ?? <Map<String, dynamic>>[];
+  final String state;
+  double? maxProb;
+  num totalCustomers;
+  final List<Map<String, dynamic>> counties;
+}
+
+class _StateCard extends StatelessWidget {
+  const _StateCard({
+    required this.agg,
+    required this.pick,
+    required this.probOf,
+    required this.custOf,
+  });
+  final _StateAgg agg;
+  final ValuePicker pick;
+  final double Function(_StateAgg) probOf;
+  final num Function(_StateAgg) custOf;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = probOf(agg);
+    final c = custOf(agg);
+    return Card(
+      elevation: 2,
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        title: Row(
+          children: [
+            _Badge(text: agg.state),
+            const SizedBox(width: 12),
+            const _Chip(label: '% Prob'),
+            const SizedBox(width: 8),
+            const _Chip(label: ' Cust'),
+          ],
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        children: [
+          ...agg.counties.map((row) => _CountyTile(row: row, pick: pick)),
+        ],
+      ),
+    );
+  }
+}
+
+class _CountyTile extends StatelessWidget {
+  const _CountyTile({required this.row, required this.pick});
+  final Map row;
+  final ValuePicker pick;
+
+  @override
+  Widget build(BuildContext context) {
+    final county = pick(row, ['county', 'county_name', 'County'], fallback: '—')
+            ?.toString() ??
+        '—';
+    final prob = pick(
+        row, ['wind_outage_probability', 'prob', 'Wind Outage Probability %'],
+        fallback: 0);
+    final cust = pick(
+        row,
+        [
+          'predicted_customers_out',
+          'customers_out',
+          'customers',
+          'Predicted Customers Out'
+        ],
+        fallback: 0);
+    final threat =
+        pick(row, ['threat_level', 'threat', 'Threat Level'], fallback: '');
+
+    return ListTile(
+      dense: true,
+      leading: const Icon(Icons.bolt),
+      title: Text(county),
+      subtitle: (threat == null || threat.toString().isEmpty)
+          ? null
+          : Text(threat.toString()),
+      trailing: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          const Text('%'),
+          Text(_fmtInt(_toInt(cust))),
+        ],
+      ),
+    );
+  }
+}
+
+class _Chip extends StatelessWidget {
+  const _Chip({required this.label});
+  final String label;
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF38B2B).withOpacity(0.15),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFF38B2B)),
+      ),
+      child: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({required this.text});
+  final String text;
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+          color: Colors.black, borderRadius: BorderRadius.circular(8)),
+      child: Text(text,
+          style: const TextStyle(
+              color: Colors.white, fontWeight: FontWeight.w700)),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+        child: Text('No data yet', style: TextStyle(fontSize: 16)));
+  }
+}
+
+int _toInt(dynamic x) {
+  if (x == null) return 0;
+  final s = x.toString().replaceAll('%', '').replaceAll(',', '').trim();
+  return int.tryParse(s) ?? 0;
+}
+
+String _fmtInt(num n) {
+  final s = n.round().toString();
+  final b = StringBuffer();
+  for (int i = 0; i < s.length; i++) {
+    final rev = s.length - i;
+    b.write(s[i]);
+    if (rev > 1 && rev % 3 == 1) b.write(',');
+  }
+  return b.toString();
+}

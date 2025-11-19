@@ -1,0 +1,124 @@
+﻿import 'package:flutter/material.dart';
+
+class LandingScreen extends StatelessWidget {
+  const LandingScreen({super.key});
+
+  static const Color brandOrange = Color(0xFFFF6A00);
+  static const Color onBrandOrange = Colors.black;
+
+  bool get _hasTruck =>
+      const AssetImage('assets/images/truck.jpg') is AssetImage;
+  bool get _hasLogo =>
+      const AssetImage('assets/icons/da_logo.png') is AssetImage;
+
+  @override
+  Widget build(BuildContext context) {
+    final hero = Image.asset(
+      'assets/images/truck.jpg',
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Container(color: Colors.black),
+    );
+
+    return Scaffold(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        titleSpacing: 16,
+        title: Row(
+          children: [
+            Image.asset(
+              'assets/icons/da_logo.png',
+              height: 28,
+              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            ),
+            const SizedBox(width: 8),
+            const Text(
+              'Divergent Alliance',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          hero,
+          // bottom scrim for contrast
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withOpacity(0.15),
+                  Colors.black.withOpacity(0.35),
+                  Colors.black.withOpacity(0.85),
+                ],
+                stops: const [0.0, 0.5, 1.0],
+              ),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  const Spacer(),
+                  // primary CTA
+                  Semantics(
+                    button: true,
+                    label: 'Open Weather Center',
+                    child: SizedBox(
+                      height: 56,
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.cloud),
+                        label: const Text('Weather'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: brandOrange,
+                          foregroundColor: onBrandOrange,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: () {
+                          Navigator.of(context).pushNamed('/weather');
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // secondary CTA
+                  Semantics(
+                    button: true,
+                    label: 'Open Shop',
+                    child: SizedBox(
+                      height: 56,
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.storefront),
+                        label: const Text('Shop'),
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: Colors.white.withOpacity(0.7)),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: () {
+                          Navigator.of(context).pushNamed('/shop');
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

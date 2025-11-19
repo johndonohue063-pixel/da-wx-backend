@@ -1,0 +1,69 @@
+import 'package:flutter/material.dart';
+import '../ui/da_button.dart';
+
+class WeatherCenter extends StatefulWidget {
+  static const route = '/weather-center';
+  const WeatherCenter({super.key});
+
+  @override
+  State<WeatherCenter> createState() => _WeatherCenterState();
+}
+
+class _WeatherCenterState extends State<WeatherCenter> {
+  String region = 'Nationwide';
+  String stateSel = 'Texas';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Weather Center')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: region,
+              decoration: const InputDecoration(labelText: 'Region'),
+              items: const [
+                DropdownMenuItem(value: 'Nationwide', child: Text('Nationwide')),
+                DropdownMenuItem(value: 'Southeast', child: Text('Southeast')),
+                DropdownMenuItem(value: 'Gulf', child: Text('Gulf')),
+                DropdownMenuItem(value: 'East Coast', child: Text('East Coast')),
+                DropdownMenuItem(value: 'Midwest', child: Text('Midwest')),
+                DropdownMenuItem(value: 'West', child: Text('West')),
+              ],
+              onChanged: (v) => setState(() => region = v ?? region),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: stateSel,
+              decoration: const InputDecoration(labelText: 'State'),
+              items: const [
+                DropdownMenuItem(value: 'Texas', child: Text('Texas')),
+                DropdownMenuItem(value: 'Florida', child: Text('Florida')),
+                DropdownMenuItem(value: 'Georgia', child: Text('Georgia')),
+                DropdownMenuItem(value: 'South Carolina', child: Text('South Carolina')),
+                DropdownMenuItem(value: 'North Carolina', child: Text('North Carolina')),
+                DropdownMenuItem(value: 'Virginia', child: Text('Virginia')),
+              ],
+              onChanged: (v) => setState(() => stateSel = v ?? stateSel),
+            ),
+            const Spacer(),
+            SizedBox(
+              width: double.infinity,
+              child: DAButton(
+                label: 'Run Forecast',
+                icon: Icons.analytics,
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Running for \ / \')),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

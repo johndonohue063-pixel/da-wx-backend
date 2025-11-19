@@ -1,0 +1,546 @@
+import "package:flutter/material.dart";
+import "../ui/da_button.dart";
+import "../services/wx_client.dart"; // your SPP API
+import "../screens/weather_center_gate.dart"; // PIN 8883 guard
+
+// Backend row model (aligns to your SPP CSV/JSON columns)
+class SppRow {
+  final String cluster;
+  final String county;
+  final String state;
+  final double prob; // Wind Outage Probability %
+  final int population;
+  final int suggestedCrews;
+  final int predictedIncidents;
+  final int predictedCustomersOut;
+  final String staging;
+  final String utilities;
+  final String peakDate;
+  final int threatLevel; // 0..3
+
+  SppRow.fromJson(Map<String, dynamic> j)
+      : cluster = (j["Cluster"] ?? "").toString(),
+        county = (j["County"] ?? "").toString(),
+        state = (j["State"] ?? "").toString(),
+        prob = ((j["Wind Outage Probability %"] ?? j["prob"] ?? 0) as num)
+            .toDouble(),
+        population = (j["Population"] is String)
+            ? int.tryParse(j["Population"]) ?? 0
+            : (j["Population"] ?? 0),
+        suggestedCrews = (j["Suggested Crews"] is String)
+            ? int.tryParse(j["Suggested Crews"]) ?? 0
+            : (j["Suggested Crews"] ?? 0),
+        predictedIncidents = (j["Predicted Incidents"] is String)
+            ? int.tryParse(j["Predicted Incidents"]) ?? 0
+            : (j["Predicted Incidents"] ?? 0),
+        predictedCustomersOut = (j["Predicted Customers Out"] is String)
+            ? int.tryParse(j["Predicted Customers Out"]) ?? 0
+            : (j["Predicted Customers Out"] ?? 0),
+        staging = (j["Staging Suggestions"] ?? "").toString(),
+        utilities = (j["Primary + Secondary Utilities"] ?? "").toString(),
+        peakDate = (j["Predicted Impact Date (peak)"] ?? "").toString(),
+        threatLevel = (j["Threat Level"] ?? j["threat"] ?? 0) is String
+            ? int.tryParse(j["Threat Level"] ?? "0") ?? 0
+            : (j["Threat Level"] ?? 0);
+}
+
+class WeatherCenter extends StatefulWidget {
+  static const route = "/weather-center";
+  const WeatherCenter({super.key});
+  @override
+  State<WeatherCenter> createState() => _WeatherCenterState();
+}
+
+class _WeatherCenterState extends State<WeatherCenter> {
+  // Scope cascade (wind-first regions)
+  final Map<String, List<String>> regionStates = const {
+    "Gulf": ["Texas", "Louisiana", "Mississippi", "Alabama", "Florida"],
+    "Southeast": [
+      "Florida",
+      "Georgia",
+      "South Carolina",
+      "North Carolina",
+      "Tennessee",
+      "Alabama",
+      "Mississippi"
+    ],
+    "East Coast": [
+      "Florida",
+      "Georgia",
+      "South Carolina",
+      "North Carolina",
+      "Virginia",
+      "Maryland",
+      "Delaware",
+      "New Jersey",
+      "New York",
+      "Connecticut",
+      "Rhode Island",
+      "Massachusetts"
+    ],
+    "Midwest": [
+      "Illinois",
+      "Indiana",
+      "Ohio",
+      "Michigan",
+      "Wisconsin",
+      "Minnesota",
+      "Missouri",
+      "Iowa"
+    ],
+    "West": [
+      "California",
+      "Oregon",
+      "Washington",
+      "Nevada",
+      "Arizona",
+      "Utah",
+      "Colorado",
+      "New Mexico"
+    ],
+  };
+
+  String region = "Nationwide";
+  String? stateSel;
+  int daysOut = 0; // “Days out” control
+  double probability =
+      35; // local slider mirror (kept in sync with backend lead row)
+  bool crewsEstimate = true;
+
+  // Derived from backend
+  List<SppRow> _rows = [];
+  bool _loading = false;
+  int _derivedThreat = 0;
+  int _derivedCrews = 0;
+  String _derivedStaging = "";
+
+  @override
+  void initState() {
+    super.initState();
+    // Self-guard: if gate not unlocked, bounce to PIN
+    if (WeatherCenterGate.authorized != true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        Navigator.pushReplacementNamed(context, WeatherCenterGate.route);
+      });
+    }
+  }
+
+  List<String> currentStates() =>
+      region == "Nationwide" ? const [] : (regionStates[region] ?? const []);
+
+  // Threat display fallback if backend not run yet
+  int threatLevelFallback(double p) {
+    if (p >= 45) return 3;
+    if (p >= 30) return 2;
+    if (p >= 20) return 1;
+    return 0;
+  }
+
+  String threatLabel(int lvl) => switch (lvl) {
+        3 => "Level 3",
+        2 => "Level 2",
+        1 => "Level 1",
+        _ => "Level 0"
+      };
+  Color threatColor(int lvl) => switch (lvl) {
+        3 => Color(0xFFB00020),
+        2 => Color(0xFFFF6A00),
+        1 => Color(0xFFFFC107),
+        _ => Color(0xFF64B5F6),
+      };
+
+  // Fallback crew estimate (used only before backend returns)
+  int estimateCrewsFallback(double p) {
+    final lvl = threatLevelFallback(p);
+    String scope = "Nationwide";
+    if (region != "Nationwide") scope = "Region";
+    if (stateSel != null) scope = "State";
+    final base = switch (scope) {
+      "State" => [0, 10, 30, 60],
+      "Region" => [0, 50, 150, 300],
+      _ => [0, 100, 300, 600],
+    };
+    return base[lvl];
+  }
+
+  String stagingSuggestionFallback() {
+    if (stateSel != null) {
+      return "Stage near: ${stateSel!} logistics hub • 1 west, 1 east.";
+    }
+    if (region != "Nationwide") {
+      return "Stage on $region perimeter • scouts on major corridors.";
+    }
+    return "Nationwide posture • hold Tier-1 airport strike teams.";
+  }
+
+  Future<void> _run() async {
+    if (WeatherCenterGate.authorized != true) {
+      Navigator.pushReplacementNamed(context, WeatherCenterGate.route);
+      return;
+    }
+
+    setState(() => _loading = true);
+
+    try {
+      final scopeRegion = region == "Nationwide" ? null : region;
+      final scopeState = stateSel;
+
+      // IMPORTANT: This expects WxClient.nationalCsv to accept named args {region, state, daysOut}
+      // and return List<Map<String,dynamic>> with SPP columns shown in SppRow.
+      final List<Map<String, dynamic>> data = await WxClient.nationalCsv(
+        region: scopeRegion,
+        state: scopeState,
+        daysOut: daysOut,
+      );
+
+      final rows = data.map((e) => SppRow.fromJson(e)).toList();
+      rows.sort(
+          (a, b) => b.predictedCustomersOut.compareTo(a.predictedCustomersOut));
+
+      // Drive badge, crews, staging from backend truth
+      final lvl = rows.isEmpty
+          ? 0
+          : rows
+              .map((e) => e.threatLevel)
+              .fold<int>(0, (m, v) => v > m ? v : m);
+      final crews = rows.isEmpty
+          ? 0
+          : rows.take(10).fold<int>(0, (s, r) => s + r.suggestedCrews);
+
+      setState(() {
+        _rows = rows;
+        probability = rows.isEmpty ? probability : rows.first.prob;
+        _derivedThreat = lvl;
+        _derivedCrews = crews;
+        _derivedStaging =
+            rows.isNotEmpty ? rows.first.staging : stagingSuggestionFallback();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("Forecast fetch failed: $e")));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lvl =
+        _rows.isEmpty ? threatLevelFallback(probability) : _derivedThreat;
+    final states = currentStates();
+    final badgeColor = threatColor(lvl);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Weather Center"),
+        actions: [
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: badgeColor.withOpacity(.18),
+              border: Border.all(color: badgeColor, width: 1),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(children: [
+              const Icon(Icons.bolt_rounded, size: 16),
+              const SizedBox(width: 6),
+              Text(threatLabel(lvl),
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+            ]),
+          )
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // Scope / Region → State
+            Row(children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: region,
+                  decoration:
+                      const InputDecoration(labelText: "Scope / Region"),
+                  items: [
+                    const DropdownMenuItem(
+                        value: "Nationwide", child: Text("Nationwide")),
+                    ...regionStates.keys
+                        .map((r) => DropdownMenuItem(value: r, child: Text(r))),
+                  ],
+                  onChanged: (v) => setState(() {
+                    region = v ?? "Nationwide";
+                    stateSel = null;
+                  }),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: stateSel,
+                  decoration: const InputDecoration(labelText: "State"),
+                  items: states
+                      .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+                      .toList(),
+                  onChanged: states.isEmpty
+                      ? null
+                      : (v) => setState(() => stateSel = v),
+                  disabledHint: const Text("—"),
+                ),
+              ),
+            ]),
+
+            const SizedBox(height: 12),
+
+            // Days out
+            Row(
+              children: [
+                const Expanded(child: Text("Days out")),
+                Text("$daysOut d",
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+              ],
+            ),
+            Slider(
+              min: 0,
+              max: 10,
+              divisions: 10,
+              value: daysOut.toDouble(),
+              label: daysOut.toString(),
+              onChanged: (v) => setState(() => daysOut = v.round()),
+            ),
+
+            const SizedBox(height: 12),
+
+            // Cards: Threat, Crews, Staging
+            _cardsRow(
+              context,
+              threat: threatLabel(lvl),
+              threatColor: badgeColor,
+              crews: _rows.isEmpty
+                  ? (crewsEstimate
+                      ? "${estimateCrewsFallback(probability)}"
+                      : "—")
+                  : "$_derivedCrews",
+              staging:
+                  _rows.isEmpty ? stagingSuggestionFallback() : _derivedStaging,
+              scopeLabel: stateSel ?? region,
+            ),
+
+            const SizedBox(height: 12),
+
+            // Wind probability slider (still useful as “what if” pre-run)
+            Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                    "Wind Outage Probability: ${probability.toStringAsFixed(0)}%")),
+            Slider(
+                min: 0,
+                max: 100,
+                divisions: 100,
+                value: probability,
+                onChanged: (v) => setState(() => probability = v)),
+
+            CheckboxListTile(
+              value: crewsEstimate,
+              onChanged: (v) =>
+                  setState(() => crewsEstimate = v ?? crewsEstimate),
+              title: const Text("Estimate Crews (wind)"),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+            ),
+
+            const SizedBox(height: 6),
+
+            // Mini bar chart: Top Predicted Customers Out (from backend)
+            _BarPreviewCard(
+              items: _rows
+                  .take(6)
+                  .map((r) => {
+                        "name": "${r.county} (${r.state})",
+                        "out": r.predictedCustomersOut
+                      })
+                  .toList(),
+            ),
+
+            const SizedBox(height: 16),
+
+            SizedBox(
+              width: double.infinity,
+              child: DAButton(
+                  label: "Run Forecast",
+                  icon: Icons.analytics,
+                  onPressed: _loading ? null : _run),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ----- UI helpers -----
+  Widget _cardsRow(BuildContext context,
+      {required String threat,
+      required Color threatColor,
+      required String crews,
+      required String staging,
+      required String scopeLabel}) {
+    final cards = <Widget>[
+      _InfoCard(
+          title: "Threat",
+          body: threat,
+          accent: threatColor,
+          subtitle: "Wind outage risk"),
+      _InfoCard(
+          title: "Suggested Crews",
+          body: crews,
+          accent: const Color(0xFFFF6A00),
+          subtitle: "Based on backend / scope"),
+      _InfoCard(
+          title: "Staging",
+          body: scopeLabel,
+          accent: Colors.tealAccent,
+          subtitle: staging),
+    ];
+
+    return LayoutBuilder(builder: (ctx, c) {
+      if (c.maxWidth < 540) {
+        return Column(
+            children: cards
+                .map((w) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12), child: w))
+                .toList());
+      } else {
+        return Row(children: [
+          Expanded(
+              child: Padding(
+                  padding: const EdgeInsets.only(right: 12), child: cards[0])),
+          Expanded(
+              child: Padding(
+                  padding: const EdgeInsets.only(right: 12), child: cards[1])),
+          Expanded(child: cards[2]),
+        ]);
+      }
+    });
+  }
+}
+
+// ===== Support widgets =====
+class _InfoCard extends StatelessWidget {
+  const _InfoCard(
+      {required this.title,
+      required this.body,
+      required this.accent,
+      required this.subtitle});
+  final String title;
+  final String body;
+  final Color accent;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(.08)),
+        boxShadow: const [
+          BoxShadow(
+              blurRadius: 22,
+              spreadRadius: -6,
+              offset: Offset(0, 10),
+              color: Colors.black54)
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title,
+            style: const TextStyle(fontSize: 12, color: Colors.white70)),
+        const SizedBox(height: 6),
+        Row(children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: accent, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(body,
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 6),
+        Text(subtitle,
+            style: const TextStyle(fontSize: 12, color: Colors.white60)),
+      ]),
+    );
+  }
+}
+
+class _BarPreviewCard extends StatelessWidget {
+  const _BarPreviewCard({required this.items});
+  final List<Map<String, dynamic>> items;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(.04),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(.08)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: const [
+          Icon(Icons.bar_chart, size: 16),
+          SizedBox(width: 6),
+          Text("Top predicted customers out",
+              style: TextStyle(fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 10),
+        SizedBox(
+            height: 140, child: CustomPaint(painter: _MiniBarPainter(items))),
+      ]),
+    );
+  }
+}
+
+class _MiniBarPainter extends CustomPainter {
+  _MiniBarPainter(this.items);
+  final List<Map<String, dynamic>> items;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bars = items.take(6).toList();
+    if (bars.isEmpty) return;
+    final maxOut = bars
+        .map((e) => (e["out"] as int))
+        .reduce((a, b) => a > b ? a : b)
+        .toDouble();
+    final barW = size.width / (bars.length * 1.6);
+    final paint = Paint()..isAntiAlias = true;
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+
+    for (int i = 0; i < bars.length; i++) {
+      final x = (i * 1.6 + .3) * barW;
+      final h = maxOut == 0
+          ? 0
+          : (bars[i]["out"] as int) / maxOut * (size.height - 28);
+      final r = RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, size.height - h - 18, barW, h),
+          const Radius.circular(6));
+      final shader =
+          const LinearGradient(colors: [Color(0xFFFFB15A), Color(0xFFFF6A00)])
+              .createShader(r.outerRect);
+      paint..shader = shader;
+      canvas.drawRRect(r, paint);
+      final label = TextSpan(
+          text: "${bars[i]["out"]}",
+          style: const TextStyle(fontSize: 10, color: Colors.white70));
+      textPainter.text = label;
+      textPainter.layout(minWidth: 0, maxWidth: barW * 1.5);
+      textPainter.paint(canvas, Offset(x - 2, size.height - 16));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
