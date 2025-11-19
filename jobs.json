@@ -1,0 +1,5 @@
+[
+  { "id": 1, "title": "Storm crew staging", "city": "Houston", "status": "Scheduled" },
+  { "id": 2, "title": "Feeder patrol north", "city": "Conroe", "status": "Open" },
+  { "id": 3, "title": "Damage assessment west", "city": "Katy", "status": "Closed" }
+]

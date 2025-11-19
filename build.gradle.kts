@@ -1,0 +1,47 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+android {
+    namespace = "com.divergent.alliance"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.divergent.alliance"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    buildTypes {
+        debug {
+            // keep debug simple and fast
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+        release {
+            // if you later enable shrinking, set BOTH true together
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+}
+
+flutter { source = "../.." }
+
+dependencies {
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
+}

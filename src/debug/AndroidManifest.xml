@@ -1,0 +1,11 @@
+﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!-- Debug-only: work around emulator stalls -->
+    <meta-data
+        android:name="io.flutter.embedding.android.EnableImpeller"
+        android:value="false"/>
+    <meta-data
+        android:name="androidx.profileinstaller.profileInstallEnabled"
+        android:value="false"/>
+  </application>
+</manifest>

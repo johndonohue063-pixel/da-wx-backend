@@ -1,0 +1,76 @@
+{
+  "version": "2025-09-23b",
+  "threatLevel": {
+    "level3": {
+      "probThreshold": 45,
+      "customersOutThresholds": [
+        {"minPop": 0, "threshold": 25000},
+        {"minPop": 1000000, "threshold": 75000},
+        {"minPop": 2000000, "threshold": 100000}
+      ]
+    }
+  },
+  "capBands": [
+    {
+      "minProb": 12,
+      "maxProb": 19,
+      "type": "scaled",
+      "popCaps": [
+        {"maxPop": 99999, "capRate": 0.015},
+        {"minPop": 100000, "maxPop": 499999, "capRate": 0.011},
+        {"minPop": 500000, "maxPop": 999999, "capRate": 0.0075},
+        {"minPop": 1000000, "capRate": 0.0075, "twoMillionMultiplier": 0.80}
+      ],
+      "probScaleDivisor": 16
+    },
+    {
+      "minProb": 20,
+      "maxProb": 29,
+      "type": "fixed",
+      "popCaps": [
+        {"maxPop": 99999, "capRate": 0.012},
+        {"minPop": 100000, "maxPop": 499999, "capRate": 0.009},
+        {"minPop": 500000, "maxPop": 999999, "capRate": 0.006},
+        {"minPop": 1000000, "capRate": 0.005, "twoMillionMultiplier": 0.80}
+      ]
+    },
+    {
+      "minProb": 30,
+      "maxProb": 44,
+      "type": "fixed",
+      "popCaps": [
+        {"maxPop": 99999, "capRate": 0.018},
+        {"minPop": 100000, "maxPop": 499999, "capRate": 0.012},
+        {"minPop": 500000, "maxPop": 999999, "capRate": 0.008},
+        {"minPop": 1000000, "capRate": 0.006, "twoMillionMultiplier": 0.80}
+      ]
+    },
+    {
+      "minProb": 45,
+      "maxProb": 100,
+      "type": "fixed",
+      "popCaps": [
+        {"maxPop": 99999, "capRate": 0.022},
+        {"minPop": 100000, "maxPop": 499999, "capRate": 0.015},
+        {"minPop": 500000, "maxPop": 999999, "capRate": 0.010},
+        {"minPop": 1000000, "capRate": 0.008, "twoMillionMultiplier": 0.80}
+      ]
+    }
+  ],
+  "clusterCeilings": { "Chicagoland Corridor": 90000 },
+  "bridgeRamp": [0.4, 0.55, 0.7, 0.85, 1.0],
+  "crewRules": [
+    {"maxCustomersOut": 5000, "line": "10 to 15 line", "support": "4 to 8 support"},
+    {"maxCustomersOut": 25000, "line": "35 to 60 line", "support": "15 to 30 support"},
+    {"maxCustomersOut": 50000, "line": "60 to 100 line", "support": "25 to 40 support"},
+    {"maxCustomersOut": 200000, "line": "100 to 150 line", "support": "40 to 60 support"},
+    {"maxCustomersOut": 1000000000, "line": "150 to 250 line", "support": "60 to 120 support"}
+  ],
+  "incidentFactorPerPopPerPct": 0.000004,
+  "eastCoastOffsets": {
+    "FL Peninsula Atlantic": 0, "FL Space Coast": 0, "FL First Coast": 0,
+    "GA Coast": 1, "SC Lowcountry": 1, "SC Grand Strand": 1,
+    "NC Coastal Plain": 2, "NC Outer Banks": 2, "VA Tidewater": 2,
+    "DE or MD Shore": 3, "NJ Shore": 3, "NYC or LI": 3, "Southern New England": 4
+  }
+}

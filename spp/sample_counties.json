@@ -1,0 +1,27 @@
+[
+  {
+    "cluster": "Midwest",
+    "county": "Cook",
+    "state": "IL",
+    "probability": 46,
+    "population": 5187100,
+    "primaryUtilities": "ComEd",
+    "stagingSuggestions": "Regional Ops Center"
+  },
+  {
+    "cluster": "Gulf",
+    "county": "Harris",
+    "state": "TX",
+    "probability": 36,
+    "population": 4876000,
+    "primaryUtilities": "CenterPoint",
+    "stagingSuggestions": "Fairgrounds"
+  },
+  {
+    "cluster": "West Coast",
+    "county": "Los Angeles",
+    "state": "CA",
+    "probability": 22,
+    "population": 10098000
+  }
+]
