@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+httpx
+fastapi==0.121.0
+uvicorn[standard]==0.38.0
+httpx==0.25.2

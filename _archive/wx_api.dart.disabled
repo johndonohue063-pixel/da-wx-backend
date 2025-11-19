@@ -1,0 +1,224 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:csv/csv.dart';
+import 'package:http/http.dart' as http;
+
+class WxApi {
+  WxApi._();
+
+  // Emulator -> your PC
+  static const String defaultBase =
+      String.fromEnvironment('WX_SERVER', defaultValue: 'http://10.0.2.2:8011');
+
+  static String _base = defaultBase;
+  static String get base => _base;
+  static void setBase(String b) => _base = b;
+
+  // 60s to tolerate heavy runs
+  static Duration reqTimeout = const Duration(seconds: 60);
+
+  static Future<void> discover({List<String>? candidates}) async {
+    final list = <String>[
+      if (candidates != null) ...candidates,
+      _base,
+      'http://10.0.2.2:8011',
+      'http://10.0.2.2:8010',
+      'http://127.0.0.1:8011',
+      'http://127.0.0.1:8010',
+    ];
+    for (final c in list) {
+      try {
+        final r = await http
+            .get(Uri.parse(c).resolve('/health'),
+                 headers: const {'Accept': 'application/json'})
+            .timeout(const Duration(milliseconds: 900));
+        if (r.statusCode == 200) {
+          _base = c;
+          // ignore: avoid_print
+          print('[wx] health OK at $c');
+          return;
+        }
+      } catch (_) {}
+    }
+  }
+
+  static Uri _buildNationalUri({
+    required String b,
+    String? region,
+    required int maxZones,
+    required int threshold, // probability percent
+    required int horizonHours,
+    String format = 'json',
+    int? windMph,
+    String? state,
+  }) {
+    // // final baseUri = Uri.parse(b).resolve('/report/national');
+    final qp = <String, String>{
+      'max_zones': '$maxZones',
+      'threshold': '$threshold',
+      'horizon_hours': '$horizonHours',
+      if (region != null && region.isNotEmpty) 'region': region,
+      if (state != null && state.isNotEmpty) 'state': state,
+      'format': format,
+    };
+    // try multiple wind keys; server can ignore unknowns
+    if (windMph != null) {
+      qp['wind_mph'] = '$windMph';
+      qp['wind_min'] = '$windMph';
+      qp['wind_threshold'] = '$windMph';
+    }
+    return baseUri.replace(queryParameters: qp);
+  }
+
+  static Uri nationalRequestUri({
+    String? baseUrl,
+    String? region,
+    int maxZones = 50,
+    int threshold = 12,
+    int horizonHours = 24,
+    String format = 'json',
+    int? windMph,
+    String? state,
+  }) {
+    final b = baseUrl ?? base;
+    return _buildNationalUri(
+      b: b,
+      region: region,
+      maxZones: maxZones,
+      threshold: threshold,
+      horizonHours: horizonHours,
+      format: format,
+      windMph: windMph,
+      state: state,
+    );
+  }
+
+  static Future<List<Map<String, dynamic>>> nationalSmart({
+    String? baseUrl,
+    String? region,
+    int maxZones = 50,
+    int threshold = 12,
+    int horizonHours = 24,
+    int? windMph,
+    String? state,
+  }) async {
+    final req = nationalRequestUri(
+      baseUrl: baseUrl,
+      region: region,
+      maxZones: maxZones,
+      threshold: threshold,
+      horizonHours: horizonHours,
+      format: 'json',
+      windMph: windMph,
+      state: state,
+    );
+
+    // ignore: avoid_print
+    print('[wx] GET $req');
+
+    final r = await http
+        .get(
+          req,
+          headers: const {
+            'Accept': 'application/json, text/csv, text/plain, */*',
+            'User-Agent': 'DivergentAllianceApp',
+          },
+        )
+        .timeout(reqTimeout);
+
+    final type = (r.headers['content-type'] ?? '').toLowerCase();
+    if (r.statusCode < 200 || r.statusCode >= 300) {
+      throw Exception('HTTP ${r.statusCode}');
+    }
+
+    final body = r.body.trimLeft();
+
+    if (type.contains('application/json') || body.startsWith('[') || body.startsWith('{')) {
+      final decoded = json.decode(body);
+      return _jsonToMaps(decoded);
+    }
+
+    if (type.contains('text/csv') || type.contains('text/plain') || body.toLowerCase().contains('county,')) {
+      return _csvToMaps(body);
+    }
+
+    if (body.startsWith('<')) throw Exception('Server returned HTML');
+    return const <Map<String, dynamic>>[];
+  }
+
+  static Uri nationalCsvUri({
+    String? baseUrl,
+    String? region,
+    int maxZones = 50,
+    int threshold = 12,
+    int horizonHours = 24,
+    int? windMph,
+    String? state,
+  }) {
+    final b = baseUrl ?? base;
+    return _buildNationalUri(
+      b: b,
+      region: region,
+      maxZones: maxZones,
+      threshold: threshold,
+      horizonHours: horizonHours,
+      format: 'csv',
+      windMph: windMph,
+      state: state,
+    );
+  }
+
+  static Future<bool> ping() async {
+    try {
+      final r = await http
+          .get(Uri.parse(base).resolve('/health'))
+          .timeout(const Duration(milliseconds: 900));
+      return r.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ---- helpers ----
+  static List<Map<String, dynamic>> _jsonToMaps(dynamic decoded) {
+    if (decoded is List) return decoded.cast<Map<String, dynamic>>();
+    if (decoded is Map) {
+      if (decoded['rows'] is List) return (decoded['rows'] as List).cast<Map<String, dynamic>>();
+      if (decoded['columns'] is List && decoded['data'] is List) {
+        final cols = (decoded['columns'] as List).map((e) => e.toString()).toList();
+        final out = <Map<String, dynamic>>[];
+        for (final rr in (decoded['data'] as List)) {
+          if (rr is List) {
+            final m = <String, dynamic>{};
+            for (var i = 0; i < cols.length && i < rr.length; i++) {
+              m[cols[i]] = rr[i];
+            }
+            out.add(m);
+          }
+        }
+        return out;
+      }
+      if (decoded['csv'] is String) return _csvToMaps(decoded['csv'] as String);
+      final maps = decoded.values.whereType<Map>().cast<Map<String, dynamic>>().toList();
+      if (maps.isNotEmpty) return maps;
+    }
+    return const <Map<String, dynamic>>[];
+  }
+
+  static List<Map<String, dynamic>> _csvToMaps(String csvText) {
+    final text = csvText.replaceAll('\r\n', '\n');
+    final rows = const CsvToListConverter(eol: '\n').convert(text);
+    if (rows.isEmpty) return const [];
+    final headers = rows.first.map((e) => e.toString()).toList();
+    final list = <Map<String, dynamic>>[];
+    for (var i = 1; i < rows.length; i++) {
+      final row = rows[i];
+      final m = <String, dynamic>{};
+      for (var j = 0; j < headers.length && j < row.length; j++) {
+        m[headers[j]] = row[j];
+      }
+      list.add(m);
+    }
+    return list;
+  }
+}

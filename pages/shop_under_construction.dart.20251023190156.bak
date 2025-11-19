@@ -1,0 +1,120 @@
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+
+class ShopUnderConstructionPage extends StatefulWidget {
+  const ShopUnderConstructionPage({super.key});
+  @override
+  State<ShopUnderConstructionPage> createState() =>
+      _ShopUnderConstructionPageState();
+}
+
+class _ShopUnderConstructionPageState extends State<ShopUnderConstructionPage>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctl;
+  @override
+  void initState() {
+    super.initState();
+    _ctl =
+        AnimationController(vsync: this, duration: const Duration(seconds: 3))
+          ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const bg = Color(0xFF0F0F0F),
+        card = Color(0xFF101010),
+        accent = Color(0xFFFF7A00);
+    return Scaffold(
+      backgroundColor: bg,
+      appBar: AppBar(
+          backgroundColor: bg,
+          elevation: 0,
+          title: const Text("Shop", style: TextStyle(color: Colors.white)),
+          iconTheme: const IconThemeData(color: Colors.white)),
+      body: Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+              color: card,
+              borderRadius: BorderRadius.circular(16),
+              border:
+                  Border.all(color: Colors.white54.withValues(alpha: 0.06))),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+              height: 120,
+              width: 240,
+              child: AnimatedBuilder(
+                animation: _ctl,
+                builder: (context, _) => CustomPaint(
+                    painter:
+                        _SparksPainter(progress: _ctl.value, color: accent)),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text("Under construction",
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            const Text("Coming soon",
+                style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    letterSpacing: 0.3)),
+            const SizedBox(height: 16),
+            const Text(
+                "Weâ€™re welding the last pieces of the Divergent store.\nSparks will fly shortly.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white60, fontSize: 13)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+class _SparksPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  _SparksPainter({required this.progress, required this.color});
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rnd = math.Random(7);
+    final center = Offset(size.width / 2, size.height / 2 + 10);
+    const baseRadius = 22.0;
+    final paint = Paint()
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    for (int i = 0; i < 24; i++) {
+      final t = (progress + i / 24) % 1.0;
+      final angle = t * 2 * math.pi + i * 0.35;
+      final r = baseRadius + 18 * (0.5 + 0.5 * math.sin(i + progress * 6));
+      final p = Offset(
+          center.dx + r * math.cos(angle), center.dy + r * math.sin(angle));
+      final alpha = (160 + 95 * math.sin(angle)).clamp(60, 255).toInt();
+      paint.color = color.withAlpha(alpha);
+      final sz = 2.2 + 1.6 * (0.5 + 0.5 * math.sin(angle * 2 + i));
+      canvas.drawCircle(p, sz, paint);
+    }
+    final glow = Paint()
+      ..color = color.withValues(alpha: 0.15)
+      ..strokeWidth = 10
+      ..style = PaintingStyle.stroke
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12);
+    final arcRect =
+        Rect.fromCenter(center: center.translate(0, 8), width: 160, height: 60);
+    canvas.drawArc(arcRect, math.pi * 0.05, math.pi * 0.9, false, glow);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparksPainter old) => old.progress != progress;
+}

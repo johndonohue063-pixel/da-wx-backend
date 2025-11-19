@@ -1,0 +1,103 @@
+import "package:flutter/material.dart";
+import "../ui/da_button.dart";
+import "weather_results.dart";
+
+class WeatherCenterScreen extends StatefulWidget {
+  const WeatherCenterScreen({super.key});
+
+  @override
+  State<WeatherCenterScreen> createState() => _WeatherCenterScreenState();
+}
+
+class _WeatherCenterScreenState extends State<WeatherCenterScreen> {
+  String region = "Nationwide";
+  String state = "Texas";
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Weather Center")),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Region",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: region,
+              items: const [
+                DropdownMenuItem(
+                    value: "Nationwide", child: Text("Nationwide")),
+                DropdownMenuItem(value: "Southeast", child: Text("Southeast")),
+                DropdownMenuItem(value: "Northeast", child: Text("Northeast")),
+                DropdownMenuItem(value: "Midwest", child: Text("Midwest")),
+                DropdownMenuItem(
+                    value: "South Central", child: Text("South Central")),
+                DropdownMenuItem(value: "West", child: Text("West")),
+                DropdownMenuItem(
+                    value: "Mid-Atlantic", child: Text("Mid-Atlantic")),
+              ],
+              onChanged: (v) => setState(() => region = v ?? region),
+            ),
+            const SizedBox(height: 16),
+            const Text("State",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            DropdownButtonFormField<String>(
+              value: state,
+              items: const [
+                DropdownMenuItem(value: "Texas", child: Text("Texas")),
+                DropdownMenuItem(value: "Florida", child: Text("Florida")),
+                DropdownMenuItem(value: "Georgia", child: Text("Georgia")),
+                DropdownMenuItem(
+                    value: "South Carolina", child: Text("South Carolina")),
+                DropdownMenuItem(
+                    value: "North Carolina", child: Text("North Carolina")),
+                DropdownMenuItem(value: "Virginia", child: Text("Virginia")),
+                DropdownMenuItem(value: "Tennessee", child: Text("Tennessee")),
+                DropdownMenuItem(value: "Kentucky", child: Text("Kentucky")),
+                DropdownMenuItem(
+                    value: "West Virginia", child: Text("West Virginia")),
+                DropdownMenuItem(value: "Arkansas", child: Text("Arkansas")),
+                DropdownMenuItem(value: "Louisiana", child: Text("Louisiana")),
+                DropdownMenuItem(value: "Alabama", child: Text("Alabama")),
+                DropdownMenuItem(
+                    value: "Mississippi", child: Text("Mississippi")),
+                DropdownMenuItem(value: "New York", child: Text("New York")),
+                DropdownMenuItem(value: "Illinois", child: Text("Illinois")),
+                DropdownMenuItem(
+                    value: "California", child: Text("California")),
+              ],
+              onChanged: (v) => setState(() => state = v ?? state),
+            ),
+            const Spacer(),
+            SizedBox(
+              width: double.infinity,
+              child: DABtn(
+                label: "Run Forecast",
+                icon: Icons.analytics,
+                onPressed: _run,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _run() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => WeatherResults(
+          region: region,
+          state: state,
+          isNationwide: (region == "Nationwide"),
+          minWindMph: 10,
+          daysOut: 7,
+          threatFilter: "Any",
+        ),
+      ),
+    );
+  }
+}

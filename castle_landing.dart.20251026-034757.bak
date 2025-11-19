@@ -1,0 +1,213 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:divergent_alliance/screens/weather_center_pro.dart';
+import 'package:divergent_alliance/screens/weather_center_gate.dart' as gate;
+
+class CastleLanding extends StatefulWidget {
+  const CastleLanding({super.key});
+
+  @override
+  State<CastleLanding> createState() => _CastleLandingState();
+}
+
+class _CastleLandingState extends State<CastleLanding> {
+  // --- assets / constants ----------------------------------------------------
+  static const _hero = 'assets/images/truck_hero.png';
+  static const _requiredPin = '8883';
+  static const _neon = Color(0xFFFF8C2A); // neon orange
+
+  // --- controllers -----------------------------------------------------------
+  final _pinController = TextEditingController();
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  // --- helpers ---------------------------------------------------------------
+  Future<void> _openWeatherWithPin() async {
+    _pinController.clear();
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enter Gateway PIN'),
+        content: TextField(
+          controller: _pinController,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          maxLength: 4,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: const InputDecoration(
+            counterText: '',
+            hintText: '••••',
+            prefixIcon: Icon(Icons.lock),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(ctx, _pinController.text == _requiredPin),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+    if (ok == true) {
+      Navigator.of(context).pushNamed('/weather-center-pro');
+    } else if (ok == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid PIN')),
+      );
+    }
+  }
+
+  // unified neon button
+  Widget _neonButton({
+    required String label,
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    final radius = BorderRadius.circular(16);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        // neon glow + outline
+        boxShadow: const [
+          BoxShadow(color: _neon, blurRadius: 18, spreadRadius: 0.6),
+          BoxShadow(color: Color(0x55FF8C2A), blurRadius: 36, spreadRadius: 8),
+        ],
+        border: Border.all(color: _neon, width: 1.2),
+      ),
+      child: ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.transparent,
+          shadowColor: Colors.transparent,
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(borderRadius: radius),
+          foregroundColor: Colors.white,
+          textStyle: GoogleFonts.wallpoet(
+            fontSize: 18.5,
+            fontWeight: FontWeight.w400,
+            letterSpacing: 1.0,
+          ),
+        ),
+        icon: Icon(icon),
+        label: Text(label),
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  // --- UI --------------------------------------------------------------------
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // background image
+          Image.asset(_hero, fit: BoxFit.cover),
+
+          // brighten whole scene
+          Container(color: const Color.fromRGBO(255, 255, 255, 0.20)),
+
+          // bottom gradient (legibility)
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment(0, -0.35),
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.black45,
+                  Color.fromARGB(230, 0, 0, 0),
+                ],
+              ),
+            ),
+          ),
+
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Neon title (no box)
+                  Text(
+                    'Divergent Alliance',
+                    style: GoogleFonts.wallpoet(
+                      color: _neon,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: .8,
+                      shadows: [
+                        Shadow(color: _neon.withAlpha((0.90 * 255).round()), blurRadius: 22),
+                        Shadow(color: _neon.withAlpha((0.60 * 255).round()), blurRadius: 10),
+                        Shadow(color: Colors.white.withOpacity(0.12), blurRadius: 0),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Storm Response • Material Supply • Utility R&D',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 16.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+
+                  const Spacer(),
+
+                  // buttons cluster
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _neonButton(
+                          label: 'Weather Center',
+                          icon: Icons.bolt,
+                          onPressed: _openWeatherWithPin,
+                        ),
+                        const SizedBox(height: 16),
+                        _neonButton(
+                          label: 'Shop',
+                          icon: Icons.storefront,
+                          onPressed: () => Navigator.of(context).pushNamed('/shop'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12), // breathing room above gesture bar
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+Future<void> _openWeatherCenter(BuildContext context) async {
+  final ok = await Navigator.of(context).push<bool>(
+    MaterialPageRoute(builder: (_) => const gate.WeatherCenterGate()),
+  );
+  if (ok == true) {
+    if (!context.mounted) return;
+    Navigator.of(context).pushReplacementNamed('/weather-center-pro');
+  }
+}
+
+}

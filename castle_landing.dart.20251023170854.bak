@@ -1,0 +1,65 @@
+﻿import 'package:flutter/material.dart';
+
+class CastleLanding extends StatelessWidget {
+  const CastleLanding({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // truck hero background
+          Image.asset('assets/images/truck_hero.png', fit: BoxFit.cover),
+          // dark overlay
+          Container(color: Colors.black.withOpacity(0.50)),
+          // centered buttons
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _BigButton(label: 'Shop', onTap: () => Navigator.pushNamed(context, '/shop')),
+                  ),
+                  const SizedBox(height: 16),
+                  _BigButton(label: 'Divergent Weather Center', onTap: () => Navigator.pushNamed(context, '/weather')) => Navigator.pushNamed(context, '/weather'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BigButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _BigButton({required this.label, required this.onTap, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 280,
+      height: 56,
+      child: ElevatedButton(
+        onPressed: onTap,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFF38B2B),
+          foregroundColor: Colors.black,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(28),
+          ),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+}
+
