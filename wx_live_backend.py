@@ -490,7 +490,7 @@ def rows_for_region_sync(
         )
         allrows.extend(part)
 
-    allrows.sort(key=lambda x: x.get('maxGust',0.0), reverse=True), reverse=True)
+    allrows.sort(key=lambda x: x.get('maxGust', 0.0), reverse=True)
     return allrows
 
 
@@ -678,4 +678,5 @@ async def api_wx(
         crews=3,
     )
     return [demo_row]
+
 
