@@ -10,7 +10,20 @@ app = FastAPI(title="WX Live Backend", version="1.0")
 
 # region sets matching the app
 REGIONS: Dict[str, set[str]] = {
-    "NE": {"ME","NH","VT","MA","RI","CT","NY","NJ","PA"},
+    "EASTERN": {
+        "CT","DE","MA","ME","MD","NH","NJ","NY",
+        "NC","OH","PA","RI","SC","VT","VA","WV"
+    },
+    "SOUTHERN": {
+        "AL","AR","FL","GA","LA","MS","NM","OK","TN","TX"
+    },
+    "CENTRAL": {
+        "CO","IL","IN","IA","KS","KY","MI","MN","MO","NE","ND","SD","WI","WY"
+    },
+    "WESTERN": {
+        "AZ","CA","ID","MT","NV","OR","UT","WA"
+    }
+},
     "MW": {"OH","MI","IN","IL","WI","MN","IA","MO","ND","SD","NE","KS"},
     "SO": {"DE","MD","DC","VA","WV","NC","SC","GA","FL","KY","TN","MS","AL","OK","TX","AR","LA"},
     "WE": {"MT","ID","WY","CO","NM","AZ","UT","NV","WA","OR","CA","AK","HI"},
@@ -475,7 +488,7 @@ def rows_for_region_sync(
     metric: str,
     threshold: float,
 ) -> List[Dict[str, Any]]:
-    region_code = (region or "NE").upper()
+    region_code = (region or "EASTERN").upper().upper()
     states = REGIONS.get(region_code, REGIONS["NE"])
     allrows: List[Dict[str, Any]] = []
 
@@ -490,7 +503,7 @@ def rows_for_region_sync(
         )
         allrows.extend(part)
 
-    allrows.sort(key=lambda x: x.get('maxGust',0.0), reverse=True), reverse=True)
+    allrows.sort(key=lambda x: x.get("population", 0), reverse=True)
     return allrows
 
 
@@ -631,51 +644,4 @@ if __name__ == "__main__":
             print(json.dumps(rows[0], indent=2))
 
     asyncio.run(_demo())
-
-
-
-# ---- WX API stub added by script on 11/20/2025 16:58:00 ----
-from typing import List, Optional
-from pydantic import BaseModel
-
-
-class WxReportRow(BaseModel):
-    county: str
-    state: str
-    severity: int
-    expectedGust: float
-    expectedSustained: float
-    maxGust: float
-    maxSustained: float
-    probability: float
-    crews: int
-
-
-@app.get("/api/wx", response_model=List[WxReportRow])
-async def api_wx(
-    mode: str,
-    hours: int = 6,
-    sample: int = 50,
-    region: Optional[str] = None,
-    state: Optional[str] = None,
-    county: Optional[str] = None,
-):
-    """
-    Temporary stub endpoint.
-
-    Matches calls like:
-    /api/wx?mode=State&state=Rhode+Island&hours=6&sample=50
-    """
-    demo_row = WxReportRow(
-        county=county or "Demo County",
-        state=state or region or "Demo State",
-        severity=2,
-        expectedGust=35.0,
-        expectedSustained=20.0,
-        maxGust=45.0,
-        maxSustained=30.0,
-        probability=0.75,
-        crews=3,
-    )
-    return [demo_row]
 

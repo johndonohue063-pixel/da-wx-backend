@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
@@ -334,7 +334,6 @@ async def build_state_rows_all_counties(
     hours: int = 36,
     metric: str = "gust",
     threshold: float | None = None,
-    limit: int = MAX_ROWS,
 ) -> List[Dict[str, Any]]:
     """
     Build rows for all counties in a state using census_counties, geocode, live_wind.
@@ -490,7 +489,7 @@ def rows_for_region_sync(
         )
         allrows.extend(part)
 
-    allrows.sort(key=lambda x: x.get('maxGust',0.0), reverse=True), reverse=True)
+    allrows.sort(key=lambda x: x.get("population", 0), reverse=True)
     return allrows
 
 
@@ -631,51 +630,3 @@ if __name__ == "__main__":
             print(json.dumps(rows[0], indent=2))
 
     asyncio.run(_demo())
-
-
-
-# ---- WX API stub added by script on 11/20/2025 16:58:00 ----
-from typing import List, Optional
-from pydantic import BaseModel
-
-
-class WxReportRow(BaseModel):
-    county: str
-    state: str
-    severity: int
-    expectedGust: float
-    expectedSustained: float
-    maxGust: float
-    maxSustained: float
-    probability: float
-    crews: int
-
-
-@app.get("/api/wx", response_model=List[WxReportRow])
-async def api_wx(
-    mode: str,
-    hours: int = 6,
-    sample: int = 50,
-    region: Optional[str] = None,
-    state: Optional[str] = None,
-    county: Optional[str] = None,
-):
-    """
-    Temporary stub endpoint.
-
-    Matches calls like:
-    /api/wx?mode=State&state=Rhode+Island&hours=6&sample=50
-    """
-    demo_row = WxReportRow(
-        county=county or "Demo County",
-        state=state or region or "Demo State",
-        severity=2,
-        expectedGust=35.0,
-        expectedSustained=20.0,
-        maxGust=45.0,
-        maxSustained=30.0,
-        probability=0.75,
-        crews=3,
-    )
-    return [demo_row]
-

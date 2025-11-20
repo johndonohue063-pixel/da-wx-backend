@@ -1,10 +1,9 @@
-﻿import asyncio
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
 import httpx
 from fastapi import FastAPI, Query
-MAX_ROWS = 50  # hard cap on rows returned per request
 
 app = FastAPI(title="WX Live Backend", version="1.0")
 
@@ -334,11 +333,9 @@ async def build_state_rows_all_counties(
     hours: int = 36,
     metric: str = "gust",
     threshold: float | None = None,
-    limit: int = MAX_ROWS,
 ) -> List[Dict[str, Any]]:
     """
     Build rows for all counties in a state using census_counties, geocode, live_wind.
-    Tolerant of geocode/wind failures; keeps counties with zero winds rather than dropping them.
     Output uses camelCase keys for wind values:
       expectedGust, expectedSustained, maxGust, maxSustained
     """
@@ -374,20 +371,12 @@ async def build_state_rows_all_counties(
 
                 query_name = f"{county_name} County, {STATE_NAME.get(state_abbr, state_abbr)}"
                 async with sem:
-                    try:
-                        g = await geocode(client, query_name)
-                        if g and "lat" in g and "lon" in g:
-                            lat = float(g["lat"])
-                            lon = float(g["lon"])
-                        else:
-                            lat = 0.0
-                            lon = 0.0
-                        w = await live_wind(client, lat, lon, hh)
-                    except Exception:
-                        # If anything fails, keep the county with zero winds
-                        lat = 0.0
-                        lon = 0.0
-                        w = {"exp_sust": 0.0, "exp_gust": 0.0, "max_sust": 0.0, "max_gust": 0.0}
+                    g = await geocode(client, query_name)
+                    if not g:
+                        return
+                    lat = g["lat"]
+                    lon = g["lon"]
+                    w = await live_wind(client, lat, lon, hh)
 
                 eg = float(w.get("exp_gust", 0.0) or 0.0)
                 es = float(w.get("exp_sust", 0.0) or 0.0)
@@ -417,14 +406,6 @@ async def build_state_rows_all_counties(
                     "severity": sev,
                     "crews": crew_count,
                 }
-                # legacy aliases for WCP client
-                row["expGust"] = eg
-                row["expSust"] = es
-                row["maxGust"] = mg
-                row["maxSust"] = ms
-                row["crewCount"] = crew_count
-                row["threatLevel"] = sev
-
                 out.append(row)
             except Exception:
                 return
@@ -433,6 +414,8 @@ async def build_state_rows_all_counties(
 
     out.sort(key=lambda r: r.get("population", 0), reverse=True)
     return out
+
+
 async def all_counties_national(
     hours: int = 36,
     metric: str = "gust",
@@ -490,7 +473,7 @@ def rows_for_region_sync(
         )
         allrows.extend(part)
 
-    allrows.sort(key=lambda x: x.get('maxGust',0.0), reverse=True), reverse=True)
+    allrows.sort(key=lambda x: x.get("population", 0), reverse=True)
     return allrows
 
 
@@ -545,83 +528,6 @@ async def __diag_geocode(q: str = Query(..., description="Place to geocode")):
     return {"q": q, "result": res}
 
 
-
-
-# --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
-# --- WCP SHIMS ADDED BY MASTER-FIX-WX ---
-
-
-
-@app.get("/report/county")
-async def report_county(
-    state: str = Query(...),
-    county: str = Query(...),
-    hours: int = Query(36),
-    metric: str = Query("gust"),
-    threshold: float = Query(0.0),
-) -> List[Dict[str, Any]]:
-    """
-    Client compatibility shim:
-      - If state='US' and county is 'Nationwide' (or similar), return the national list.
-      - Otherwise, return the matching county from the state-level rows.
-    """
-    st = (state or "").upper()
-    cname = (county or "").strip().lower()
-
-    # Special case: US / Nationwide triggers national output
-    if st == "US" and cname in ("nationwide", "national", "us"):
-        rows = await all_counties_national(
-            hours=hours,
-            metric=metric,
-            threshold=threshold,
-        )
-        return rows
-
-    # Normal case: get all rows for that state and filter by county name
-    rows = await rows_for_state(
-        state=st,
-        hours=hours,
-        metric=metric,
-        threshold=threshold,
-    )
-
-    out: List[Dict[str, Any]] = []
-    for r in rows:
-        rc = str(r.get("county", "")).strip().lower()
-        if rc == cname:
-            out.append(r)
-    return out
-
-@app.get("/wcp/region")
-def wcp_region(
-    region: str = Query("NE"),
-    hours: int = Query(36),
-    metric: str = Query("gust"),
-    threshold: float = Query(0.0),
-):
-    # Delegate to existing region report
-    return report_region(region=region, hours=hours, metric=metric, threshold=threshold)
-
-
-@app.get("/wcp/state")
-async def wcp_state(
-    state: str = Query(...),
-    hours: int = Query(36),
-    metric: str = Query("gust"),
-    threshold: float = Query(0.0),
-):
-    return await report_state(state=state, hours=hours, metric=metric, threshold=threshold)
-
-
-@app.get("/wcp/national")
-async def wcp_national(
-    hours: int = Query(36),
-    metric: str = Query("gust"),
-    threshold: float = Query(0.0),
-):
-    return await report_national(hours=hours, metric=metric, threshold=threshold)
-
-
 if __name__ == "__main__":
     async def _demo():
         rows = await all_counties_national(hours=12, metric="gust", threshold=0.0)
@@ -631,51 +537,3 @@ if __name__ == "__main__":
             print(json.dumps(rows[0], indent=2))
 
     asyncio.run(_demo())
-
-
-
-# ---- WX API stub added by script on 11/20/2025 16:58:00 ----
-from typing import List, Optional
-from pydantic import BaseModel
-
-
-class WxReportRow(BaseModel):
-    county: str
-    state: str
-    severity: int
-    expectedGust: float
-    expectedSustained: float
-    maxGust: float
-    maxSustained: float
-    probability: float
-    crews: int
-
-
-@app.get("/api/wx", response_model=List[WxReportRow])
-async def api_wx(
-    mode: str,
-    hours: int = 6,
-    sample: int = 50,
-    region: Optional[str] = None,
-    state: Optional[str] = None,
-    county: Optional[str] = None,
-):
-    """
-    Temporary stub endpoint.
-
-    Matches calls like:
-    /api/wx?mode=State&state=Rhode+Island&hours=6&sample=50
-    """
-    demo_row = WxReportRow(
-        county=county or "Demo County",
-        state=state or region or "Demo State",
-        severity=2,
-        expectedGust=35.0,
-        expectedSustained=20.0,
-        maxGust=45.0,
-        maxSustained=30.0,
-        probability=0.75,
-        crews=3,
-    )
-    return [demo_row]
-

@@ -1,0 +1,247 @@
+﻿import asyncio, time
+from typing import List, Dict, Tuple
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timezone
+
+# --- Data sources ---
+GAZ_URL = "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2023_Gazetteer/2023_Gaz_counties_national.txt"
+OM_BASE = "https://api.open-meteo.com/v1/forecast"
+
+# --- Official Census Regions (strict) ---
+REGION_STATES = {
+    "Northeast": ["CT","ME","MA","NH","RI","VT","NJ","NY","PA"],
+    "Midwest"  : ["IL","IN","MI","OH","WI","IA","KS","MN","MO","NE","ND","SD"],
+    "South"    : ["DE","FL","GA","MD","NC","SC","VA","DC","WV","AL","KY","MS","TN","AR","LA","OK","TX"],
+    "West"     : ["AZ","CO","ID","MT","NV","NM","UT","WY","AK","CA","HI","OR","WA"]
+}
+
+# Parsed counties: (county_name, state_abbr, lat, lon, population)
+COUNTIES: List[Tuple[str,str,float,float,int]] = []
+# Fast index by state
+STATE_IDX: Dict[str, List[int]] = {}
+# Simple in-memory cache
+CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
+
+app = FastAPI(title="Wx Live Regions")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+async def load_gazetteer() -> None:
+    """Load the full county list from Census Gazetteer into COUNTIES + STATE_IDX."""
+    global COUNTIES, STATE_IDX
+    if COUNTIES:
+        return
+
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(GAZ_URL)
+        r.raise_for_status()
+        text = r.text
+
+    # Gazetteer is tab-delimited; we need NAME, USPS, INTPTLAT, INTPTLONG, POPULATION (if present)
+    lines = text.splitlines()
+    if not lines:
+        return
+
+    hdr = lines[0].split("\t")
+    name_i = hdr.index("NAME")
+    st_i   = hdr.index("USPS")
+    lat_i  = hdr.index("INTPTLAT")
+    lon_i  = hdr.index("INTPTLONG")
+    pop_i  = hdr.index("POPULATION") if "POPULATION" in hdr else None
+
+    tmp: List[Tuple[str,str,float,float,int]] = []
+    for ln in lines[1:]:
+        parts = ln.split("\t")
+        try:
+            nm = parts[name_i].replace(" County", "").replace(" Parish", "")
+            st = parts[st_i].upper()
+            la = float(parts[lat_i])
+            lo = float(parts[lon_i])
+            pop = int(parts[pop_i]) if pop_i is not None and parts[pop_i].isdigit() else 0
+            tmp.append((nm, st, la, lo, pop))
+        except Exception:
+            continue
+
+    COUNTIES = tmp
+    STATE_IDX = {}
+    for i, (_, st, _, _, _) in enumerate(COUNTIES):
+        STATE_IDX.setdefault(st, []).append(i)
+
+async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float,float,float,float,float,str]:
+    """
+    Best-effort live fetch; never raises.
+    Returns: (expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_timestamp)
+    """
+    try:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": "windspeed_10m,windgusts_10m",
+            "forecast_days": 3,
+            "timezone": "UTC",
+        }
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(OM_BASE, params=params)
+            r.raise_for_status()
+            j = r.json()
+        g = j.get("hourly", {}).get("windgusts_10m", []) or []
+        w = j.get("hourly", {}).get("windspeed_10m", []) or []
+        t = j.get("hourly", {}).get("time", []) or []
+        if not g or not w:
+            return (0.0, 0.0, 0.0, 0.0, 0.0, now_iso())
+        n = max(6, min(hours, len(g)))
+        eg = sum(g[:n]) / n
+        es = sum(w[:n]) / n
+        mg = max(g)
+        ms = max(w)
+        # crude outage-like probability proxy from gust
+        p = max(0.0, min(0.75, mg / 100.0))
+        stamp = t[0] if t else now_iso()
+        return (eg, es, mg, ms, p, stamp)
+    except Exception:
+        return (0.0, 0.0, 0.0, 0.0, 0.0, now_iso())
+
+def mk_row(c: str, s: str, eg: float, es: float, mg: float, ms: float,
+           p: float, pop: int, stamp: str) -> Dict:
+    sev = "3" if mg >= 50 else ("2" if mg >= 35 else "1")
+    conf = int(min(100, max(0, p * 100)))
+    if pop > 0:
+        crews = int(max(1, round((p * (pop / 100000.0)) * 10)))
+    else:
+        crews = int(max(1, round(p * 10)))
+
+    return {
+        "county": c,
+        "state": s,
+        "expectedGust": round(eg, 1),
+        "expectedSustained": round(es, 1),
+        "maxGust": round(mg, 1),
+        "maxSustained": round(ms, 1),
+        "probability": round(p, 2),
+        "crews": crews,
+        "severity": sev,
+        "confidence": conf,
+        "population": pop,
+        "generatedAt": now_iso(),
+        "source": "open-meteo",
+        "upstreamStamp": stamp,
+    }
+
+async def compute(indices: List[int], hours: int) -> List[Dict]:
+    out: List[Dict] = []
+    sem = asyncio.Semaphore(8)
+
+    async def one(i: int) -> None:
+        try:
+            c, st, la, lo, pop = COUNTIES[i]
+            async with sem:
+                eg, es, mg, ms, p, stamp = await live_wind(la, lo, hours)
+            out.append(mk_row(c, st, eg, es, mg, ms, p, pop, stamp))
+        except Exception:
+            # skip failure
+            pass
+
+    await asyncio.gather(*[one(i) for i in indices])
+    out.sort(key=lambda r: (r["probability"], r["maxGust"]), reverse=True)
+    return out
+
+def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
+    mode = (mode or "Nationwide").strip()
+    if mode == "Nationwide":
+        idx = list(range(len(COUNTIES)))
+    elif mode == "State" and state:
+        idx = STATE_IDX.get(state.upper(), [])
+    elif mode == "Regional" and region in REGION_STATES:
+        allowed = set(REGION_STATES[region])
+        base: List[int] = []
+        for st in allowed:
+            base.extend(STATE_IDX.get(st, []))
+        idx = base
+    else:
+        idx = []
+
+    if not idx:
+        return []
+
+    idx_sorted = sorted(idx, key=lambda i: COUNTIES[i][4], reverse=True)
+    if sample > 0 and sample < len(idx_sorted):
+        return idx_sorted[:sample]
+    return idx_sorted
+
+def cache_key(mode: str, region: str, state: str, hours: int, sample: int) -> str:
+    return f"{mode}|{region}|{state}|{hours}|{sample}"
+
+async def handle(mode: str, region: str, state: str, hours: int,
+                 sample: int, nocache: int) -> List[Dict]:
+    await load_gazetteer()
+    hours = max(6, min(72, hours or 24))
+    sample = max(1, min(1000, sample or 25))
+
+    idx = indices_for(mode, region, state, sample)
+    if not idx:
+        return []
+
+    k = cache_key(mode or "Nationwide", region or "", state or "", hours, sample)
+    now = time.time()
+    if not nocache:
+        hit = CACHE.get(k)
+        if hit and (now - hit[0]) < 600:
+            return hit[1]
+
+    rows = await compute(idx, hours)
+    CACHE[k] = (now, rows)
+    return rows
+
+@app.get("/api/wx")
+async def api_wx(
+    req: Request,
+    mode: str = "Nationwide",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = 25,
+    nocache: int = 0,
+):
+    return await handle(mode, region, state, hours, sample, nocache)
+
+@app.get("/wx")
+async def wx_alias(
+    req: Request,
+    mode: str = "Nationwide",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = 25,
+    nocache: int = 0,
+):
+    return await handle(mode, region, state, hours, sample, nocache)
+
+@app.get("/{full_path:path}")
+async def catch_all(
+    req: Request,
+    full_path: str,
+    mode: str = "Nationwide",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = 25,
+    nocache: int = 0,
+):
+    return await handle(mode, region, state, hours, sample, nocache)
+
+@app.on_event("startup")
+async def init() -> None:
+    await load_gazetteer()
