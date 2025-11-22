@@ -426,3 +426,84 @@ def api_wx(
         reverse=True,
     )
     return [r.to_dict() for r in rows]
+
+# ---------------------------------------------------------------------------
+# State abbreviation mapping + improved county filtering
+# ---------------------------------------------------------------------------
+
+STATE_ABBREV_TO_NAME = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
+    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
+    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
+    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
+    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
+    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming",
+}
+
+
+def filter_counties(mode, sample, region, state, county):
+    """
+    Replacement filter_counties that:
+      - Accepts state abbreviations (e.g. "RI") and full names
+      - Handles National, State, County, Region modes
+      - For Regions, can balance output across states instead of all NY
+    """
+    allc = load_counties()
+
+    # NATIONAL: all counties
+    if mode == Mode.NATIONAL:
+        counties = allc
+
+    # STATE: normalize abbreviations like "RI" -> "Rhode Island"
+    elif mode == Mode.STATE:
+        if not state:
+            raise ValueError("state is required for STATE mode")
+        raw = state.strip()
+        full_name = STATE_ABBREV_TO_NAME.get(raw.upper(), raw)
+        counties = [c for c in allc if c.state.lower() == full_name.lower()]
+
+    # COUNTY: same normalization, then prefix-match on county name
+    elif mode == Mode.COUNTY:
+        if not state or not county:
+            raise ValueError("state and county are required for COUNTY mode")
+        raw = state.strip()
+        full_name = STATE_ABBREV_TO_NAME.get(raw.upper(), raw)
+        counties = [
+            c for c in allc
+            if c.state.lower() == full_name.lower()
+            and c.county.lower().startswith(county.lower())
+        ]
+
+    # REGION: use REGION_STATES and allow for more balanced per-state output
+    elif mode == Mode.REGION:
+        if not region:
+            raise ValueError("region is required for REGION mode")
+
+        key = region.lower()
+        state_list = REGION_STATES.get(key, [])
+        if not state_list:
+            counties = []
+        else:
+            # You can tune this. For now, try to give each state some representation.
+            per_state_limit = max(1, sample // max(1, len(state_list)))
+            selected = []
+            for st in state_list:
+                st_counties = [c for c in allc if c.state == st]
+                st_counties.sort(key=lambda c: c.population, reverse=True)
+                selected.extend(st_counties[:per_state_limit])
+            selected.sort(key=lambda c: c.population, reverse=True)
+            counties = selected[:sample]
+
+    else:
+        counties = allc
+
+    counties = sorted(counties, key=lambda c: c.population, reverse=True)
+    return counties[:sample]
+
