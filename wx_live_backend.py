@@ -131,6 +131,13 @@ REGION_STATES = {
     "northwest": ["Washington","Oregon","Idaho"],
     "southwest": ["California","Nevada","Utah","Arizona","New Mexico"],
     "west": ["Colorado","Kansas","Oklahoma","Texas","Nebraska"],
+    "mid-atlantic": [
+        "New York","New Jersey","Pennsylvania",
+        "Maryland","Delaware","Virginia","West Virginia"
+    ],
+    "south central": [
+        "Texas","Oklahoma","Arkansas","Louisiana"
+    ],
 }
 
 # ---------------------------------------------------------------------------
