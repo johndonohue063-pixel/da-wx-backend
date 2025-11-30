@@ -1,575 +1,715 @@
-from __future__ import annotations
+﻿"""
+Divergent Wx Backend (NWS + CenPop + PEP)
 
-import json
-from dataclasses import dataclass
-from enum import Enum
-from functools import lru_cache
-from pathlib import Path
-from typing import Dict, List, Optional
+- Uses US Census CenPop + PEP populations for county centroids and populations.
+- Uses NWS / NOAA (api.weather.gov) hourly forecast for wind.
+- Does NOT use Open-Meteo anywhere.
+- Exposes /api/wx with a "State" mode (Nationwide / Regional kept for compatibility).
+- Outage and crew numbers are intentionally conservative.
 
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-import urllib.request
+Key requirement from user:
+  "If there's an error or no data, the function returns default values. = NEVER"
+
+We implement that as:
+  * The low–level NWS fetch (live_wind) NEVER returns fabricated "calm" values.
+  * If NWS data cannot be obtained or parsed for a county, a NoDataError is raised.
+  * The higher-level compute() catches NoDataError per-county and simply SKIPS that
+    county from the result list instead of inventing zeros.
+
+So: you either get real NWS-derived numbers, or that county is omitted.
+"""
+
+import asyncio
+import csv
+import os
 import time
-import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from typing import Dict, List, Tuple
 
-# ---------------------------------------------------------------------------
-# FastAPI app setup
-# ---------------------------------------------------------------------------
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="DA Wx Backend", version="1.2.0")
+# -------------------------------------------------------------------
+# Data sources / constants
+# -------------------------------------------------------------------
 
+CENPOP_FILE = "CenPop2020_Mean_CO.txt"
+PEP_URL = (
+    "https://api.census.gov/data/2023/pep/population"
+    "?get=NAME,POP,STATE,COUNTY&for=county:*"
+)
+
+# Small page-size constant so backend + frontend can stay in sync.
+# Your Flutter code can use the same value (e.g., const int kPageSize = 15;).
+PAGE_SIZE = 15
+
+# Official Census Regions (for optional "Nationwide" / "Regional" modes)
+REGION_STATES: Dict[str, List[str]] = {
+    "Northeast": ["CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"],
+    "Midwest": ["IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD"],
+    "South": [
+        "DE",
+        "FL",
+        "GA",
+        "MD",
+        "NC",
+        "SC",
+        "VA",
+        "DC",
+        "WV",
+        "AL",
+        "KY",
+        "MS",
+        "TN",
+        "AR",
+        "LA",
+        "OK",
+        "TX",
+    ],
+    "West": ["AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"],
+}
+
+# Parsed counties: (county_name, state_abbr, lat, lon, population)
+COUNTIES: List[Tuple[str, str, float, float, int]] = []
+STATE_IDX: Dict[str, List[int]] = {}
+FIPS_IDX: Dict[str, int] = {}
+CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
+
+
+STATE_NAME_TO_ABBR: Dict[str, str] = {
+    "Alabama": "AL",
+    "Alaska": "AK",
+    "Arizona": "AZ",
+    "Arkansas": "AR",
+    "California": "CA",
+    "Colorado": "CO",
+    "Connecticut": "CT",
+    "Delaware": "DE",
+    "District of Columbia": "DC",
+    "Florida": "FL",
+    "Georgia": "GA",
+    "Hawaii": "HI",
+    "Idaho": "ID",
+    "Illinois": "IL",
+    "Indiana": "IN",
+    "Iowa": "IA",
+    "Kansas": "KS",
+    "Kentucky": "KY",
+    "Louisiana": "LA",
+    "Maine": "ME",
+    "Maryland": "MD",
+    "Massachusetts": "MA",
+    "Michigan": "MI",
+    "Minnesota": "MN",
+    "Mississippi": "MS",
+    "Missouri": "MO",
+    "Montana": "MT",
+    "Nebraska": "NE",
+    "Nevada": "NV",
+    "New Hampshire": "NH",
+    "New Jersey": "NJ",
+    "New Mexico": "NM",
+    "New York": "NY",
+    "North Carolina": "NC",
+    "North Dakota": "ND",
+    "Ohio": "OH",
+    "Oklahoma": "OK",
+    "Oregon": "OR",
+    "Pennsylvania": "PA",
+    "Rhode Island": "RI",
+    "South Carolina": "SC",
+    "South Dakota": "SD",
+    "Tennessee": "TN",
+    "Texas": "TX",
+    "Utah": "UT",
+    "Vermont": "VT",
+    "Virginia": "VA",
+    "Washington": "WA",
+    "West Virginia": "WV",
+    "Wisconsin": "WI",
+    "Wyoming": "WY",
+    "Puerto Rico": "PR",
+}
+
+
+class NoDataError(Exception):
+    """Raised when NWS data is missing / unusable for a county."""
+
+
+app = FastAPI(title="Divergent Wx Backend (NWS + CenPop + PEP)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
-class Mode(str, Enum):
-    NATIONAL = "National"
-    REGION = "Region"
-    STATE = "State"
-    COUNTY = "County"
-
-
-@dataclass
-class County:
-    statefp: str
-    countyfp: str
-    county: str
-    state: str
-    population: int
-    lat: float
-    lon: float
-
-
-@dataclass
-class WxRow:
-    county: str
-    state: str
-    population: int
-    severity: int
-    expectedGust: float
-    expectedSustained: float
-    maxGust: float
-    maxSustained: float
-    probability: float          # 0.0-1.0
-    predicted_customers_out: int
-    crews: int
-
-    def to_dict(self) -> Dict[str, object]:
-        return {
-            "county": self.county,
-            "state": self.state,
-            "population": self.population,
-            "severity": self.severity,
-            "expectedGust": self.expectedGust,
-            "expectedSustained": self.expectedSustained,
-            "maxGust": self.maxGust,
-            "maxSustained": self.maxSustained,
-            "probability": self.probability,
-            "predicted_customers_out": self.predicted_customers_out,
-            "crews": self.crews,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Load counties (Census 2020, mean center of population)
-# ---------------------------------------------------------------------------
-
-@lru_cache
-def load_counties() -> List[County]:
-    here = Path(__file__).resolve().parent
-    path = here / "CenPop2020_Mean_CO.txt"
-    if not path.exists():
-        raise RuntimeError("County file missing: CenPop2020_Mean_CO.txt")
-
-    out: List[County] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("STATEFP"):
-                continue
-            parts = line.split(",")
-            if len(parts) != 7:
-                continue
-            try:
-                statefp, countyfp, couname, stname, pop, lat, lon = parts
-                out.append(
-                    County(
-                        statefp=statefp,
-                        countyfp=countyfp,
-                        county=couname + " County",
-                        state=stname,
-                        population=int(pop),
-                        lat=float(lat),
-                        lon=float(lon),
-                    )
-                )
-            except Exception:
-                # Skip malformed rows, keep the rest of the file usable
-                continue
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Region + state mappings
-# ---------------------------------------------------------------------------
-
-# Region -> states mapping (NOAA-ish)
-REGION_STATES: Dict[str, List[str]] = {
-    "northeast": [
-        "Maine", "New Hampshire", "Vermont", "Massachusetts", "Rhode Island",
-        "Connecticut", "New York", "New Jersey", "Pennsylvania"
-    ],
-    "southeast": [
-        "Virginia", "North Carolina", "South Carolina", "Georgia", "Florida",
-        "Alabama", "Mississippi", "Tennessee"
-    ],
-    "ohio valley": ["Ohio", "West Virginia", "Kentucky", "Indiana"],
-    "upper midwest": ["Michigan", "Wisconsin", "Minnesota", "Iowa"],
-    "south": ["Tennessee", "Arkansas", "Louisiana"],
-    "northern rockies & plains": ["Montana", "North Dakota", "South Dakota", "Wyoming"],
-    "northwest": ["Washington", "Oregon", "Idaho"],
-    "southwest": ["California", "Nevada", "Utah", "Arizona", "New Mexico"],
-    "west": ["Colorado", "Kansas", "Oklahoma", "Texas", "Nebraska"],
-    "mid-atlantic": [
-        "New York", "New Jersey", "Pennsylvania",
-        "Maryland", "Delaware", "Virginia", "West Virginia"
-    ],
-    "south central": [
-        "Texas", "Oklahoma", "Arkansas", "Louisiana"
-    ],
-}
-
-STATE_ABBREV_TO_NAME: Dict[str, str] = {
-    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
-    "CA": "California", "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware",
-    "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
-    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas",
-    "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
-    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi",
-    "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
-    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
-    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
-    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
-    "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah",
-    "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
-    "WI": "Wisconsin", "WY": "Wyoming",
-}
-
-
-def _normalize_state_name(raw: str) -> str:
-    raw = (raw or "").strip()
-    if not raw:
-        return raw
-    return STATE_ABBREV_TO_NAME.get(raw.upper(), raw)
-
-
-def filter_counties(
-    mode: Mode,
-    sample: int,
-    region: Optional[str],
-    state: Optional[str],
-    county: Optional[str],
-) -> List[County]:
-    """Single, consistent filter implementation used by /api/wx.
-
-    - Accepts full state names OR USPS abbreviations for STATE/COUNTY modes.
-    - REGION uses REGION_STATES mapping and is case-insensitive.
-    - NATIONAL simply samples from all counties.
-    """
-    allc = load_counties()
-
-    # Build base list for the requested scope
-    if mode == Mode.NATIONAL:
-        base = list(allc)
-    elif mode == Mode.STATE:
-        if not state:
-            raise ValueError("state is required for STATE mode")
-        full_name = _normalize_state_name(state)
-        base = [c for c in allc if c.state.lower() == full_name.lower()]
-    elif mode == Mode.COUNTY:
-        if not state or not county:
-            raise ValueError("state and county are required for COUNTY mode")
-        full_name = _normalize_state_name(state)
-        county_prefix = county.strip().lower()
-        base = [
-            c
-            for c in allc
-            if c.state.lower() == full_name.lower()
-            and c.county.lower().startswith(county_prefix)
-        ]
-    elif mode == Mode.REGION:
-        if not region:
-            raise ValueError("region is required for REGION mode")
-
-        key = (region or "").strip().lower()
-        region_key = None
-        for k in REGION_STATES.keys():
-            if k.lower() == key:
-                region_key = k
-                break
-        if region_key is None:
-            valid = ", ".join(sorted(REGION_STATES.keys()))
-            raise ValueError(f"Unknown region '{region}'. Valid options: {valid}")
-
-        allowed_states = set(REGION_STATES[region_key])
-        base = [c for c in allc if c.state in allowed_states]
-    else:
-        base = list(allc)
-
-    if not base:
-        return []
-
-    # Sort by population (biggest first) so we always include major metros
-    base.sort(key=lambda c: c.population, reverse=True)
-
-    if sample >= len(base):
-        return base
-
-    # For NATIONAL & REGION we want wider geographic coverage, so random sample.
-    # For STATE/COUNTY we just take the top-N by population.
-    if mode in (Mode.NATIONAL, Mode.REGION):
-        return random.sample(base, sample)
-    return base[:sample]
-
-
-# ---------------------------------------------------------------------------
-# NOAA helpers with RETRY + TIMEOUT + SAFE FALLBACK
-# ---------------------------------------------------------------------------
-
-UA = "DivergentAllianceWxBackend/1.2"
-WX_MAX_WORKERS = 12  # max parallel NOAA requests per API call
-
-
-def http_get_json(url: str) -> Dict:
-    for attempt in range(2):  # retry once
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "User-Agent": UA,
-                    "Accept": "application/geo+json, application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            if attempt == 1:
-                raise
-            time.sleep(0.2)
-    raise RuntimeError("Should not reach here")
-
-
-def parse_mph(field) -> float:
-    if not field:
-        return 0.0
-    s = str(field)
-    best = 0.0
-    for p in s.replace("mph", "").split():
-        try:
-            v = float(p)
-            if v > best:
-                best = v
-        except Exception:
-            pass
-    return best
-
-
-def summarize_hours(hourly_json: Dict, hours: int) -> Dict[str, float]:
-    periods = hourly_json.get("properties", {}).get("periods", [])
-    if not isinstance(periods, list) or not periods:
-        return {
-            "expectedGust": 0.0,
-            "expectedSustained": 0.0,
-            "maxGust": 0.0,
-            "maxSustained": 0.0,
-        }
-
-    slice_p = periods[: min(hours, len(periods))]
-
-    gusts: List[float] = []
-    sust: List[float] = []
-
-    for p in slice_p:
-        ws = parse_mph(p.get("windSpeed"))
-        wg = parse_mph(p.get("windGust"))
-        if wg == 0:
-            wg = ws
-        sust.append(ws)
-        gusts.append(wg)
-
-    if not gusts or not sust:
-        return {
-            "expectedGust": 0.0,
-            "expectedSustained": 0.0,
-            "maxGust": 0.0,
-            "maxSustained": 0.0,
-        }
-
-    return {
-        "expectedGust": round(sum(gusts) / len(gusts), 1),
-        "expectedSustained": round(sum(sust) / len(sust), 1),
-        "maxGust": round(max(gusts), 1),
-        "maxSustained": round(max(sust), 1),
-    }
-
-
-def fallback_row(county: County) -> WxRow:
-    # Treat as "no data / no threat", not Level 1.
-    return WxRow(
-        county=county.county,
-        state=county.state,
-        population=county.population,
-        severity=0,
-        expectedGust=0.0,
-        expectedSustained=0.0,
-        maxGust=0.0,
-        maxSustained=0.0,
-        probability=0.0,
-        predicted_customers_out=0,
-        crews=0,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Outage prediction (SPP-style core)
-# ---------------------------------------------------------------------------
-
-def predict_customers_out(pop: int, prob: float) -> int:
-    """
-    Core SPP-style logic:
-      - raw_out = population * probability
-      - probability bands with outage caps
-      - metro dampening
-    """
-    if pop <= 0 or prob <= 0.0:
-        return 0
-
-    p = max(0.0, min(0.99, prob))
-    raw_out = pop * p
-
-    # Metro dampening
-    if pop >= 2_000_000:
-        cap_mult = 0.85
-    elif pop >= 1_000_000:
-        cap_mult = 1.0
-    else:
-        cap_mult = 1.0
-
-    # Probability-tier caps (banded)
-    if p < 0.20:  # 0-19%
-        prob_scale = p / 0.16 if p > 0 else 0.0
-        if pop >= 500_000:
-            tier_cap = pop * 0.01 * prob_scale
-        elif pop >= 100_000:
-            tier_cap = pop * 0.015 * prob_scale
-        else:
-            tier_cap = pop * 0.02 * prob_scale
-    elif p < 0.30:  # 20-29%
-        if pop < 100_000:
-            tier_cap = pop * 0.02
-        elif pop < 500_000:
-            tier_cap = pop * 0.015
-        elif pop < 1_000_000:
-            tier_cap = pop * 0.01
-        else:
-            tier_cap = pop * 0.008
-    elif p < 0.45:  # 30-44%
-        if pop < 100_000:
-            tier_cap = pop * 0.03
-        elif pop < 500_000:
-            tier_cap = pop * 0.022
-        elif pop < 1_000_000:
-            tier_cap = pop * 0.015
-        else:
-            tier_cap = pop * 0.01
-    else:  # >= 45%
-        if pop < 100_000:
-            tier_cap = pop * 0.04
-        elif pop < 500_000:
-            tier_cap = pop * 0.03
-        elif pop < 1_000_000:
-            tier_cap = pop * 0.02
-        else:
-            tier_cap = pop * 0.013
-
-    tier_cap = tier_cap * cap_mult
-    return int(min(raw_out, tier_cap))
-
-
-def crews_from_predicted(predicted: int, pop: int) -> int:
-    """
-    Simple crew ladder based on predicted customers out.
-    You can tune thresholds however you like.
-    """
-    if predicted >= 100_000:
-        return 10
-    if predicted >= 50_000:
-        return 7
-    if predicted >= 25_000:
-        return 4
-    if predicted >= 10_000:
-        return 2
-    if predicted >= 1_000:
-        return 1
-    # very small or zero predicted impact
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Probability from winds – FIXED (no 7 mph -> 20k customers nonsense)
-# ---------------------------------------------------------------------------
-
-def probability_from_severity(severity: int) -> float:
-    """
-    Map severity band (0-4) to an outage probability in 0-1.
-
-    These are deliberately conservative at the low end so that light
-    winds never imply big outage numbers.
-    """
-    if severity <= 0:
-        return 0.0          # calm / breezy -> essentially no outages
-    if severity == 1:
-        return 0.18         # 25-34 gusts or 18-24 sustained
-    if severity == 2:
-        return 0.30         # 35-49 gusts or 25-34 sustained
-    if severity == 3:
-        return 0.45         # 50-64 gusts or 35-44 sustained
-    # severity >= 4
-    return 0.60             # 65+ gusts or 45+ sustained
-
-
-# ---------------------------------------------------------------------------
-# Fetch NOAA-based row for a single county
-# ---------------------------------------------------------------------------
-
-def fetch_row_for_county(county: County, hours: int) -> WxRow:
-    """
-    Live NOAA/NWS-backed fetch for a single county.
-
-    IMPORTANT:
-      Threat Level 0 (severity == 0) is hard-clamped to:
-        - probability = 0.0
-        - predicted_customers_out = 0
-        - crews = 0
-
-    This prevents benign wind forecasts from ever showing
-    thousands of customers out at "Level 0".
-    """
-    try:
-        pts = http_get_json(f"https://api.weather.gov/points/{county.lat},{county.lon}")
-        hourly_url = pts.get("properties", {}).get("forecastHourly")
-        if not hourly_url:
-            return fallback_row(county)
-
-        hourly = http_get_json(hourly_url)
-        s = summarize_hours(hourly, hours)
-
-        max_g = s["maxGust"]
-        max_s = s["maxSustained"]
-
-        # Severity bands
-        if max_g >= 65 or max_s >= 45:
-            sev = 4
-        elif max_g >= 50 or max_s >= 35:
-            sev = 3
-        elif max_g >= 35 or max_s >= 25:
-            sev = 2
-        elif max_g >= 25 or max_s >= 18:
-            sev = 1
-        else:
-            sev = 0
-
-        pop = county.population
-
-        # Core outage probability heuristic (0..~0.95) from wind
-        prob = min(0.95, max(0.0, 0.5 + (max_g / 100.0)))
-
-        if sev == 0:
-            # Threat Level 0 clamp: no outages, no crews, prob 0.0
-            prob = 0.0
-            predicted = 0
-            crew_ct = 0
-        else:
-            # Predicted customers out (SPP-style core, no cluster ceiling)
-            predicted = predict_customers_out(pop, prob)
-            # Crews from predicted customers out
-            crew_ct = crews_from_predicted(predicted, pop)
-
-        return WxRow(
-            county=county.county,
-            state=county.state,
-            population=pop,
-            severity=sev,
-            expectedGust=s["expectedGust"],
-            expectedSustained=s["expectedSustained"],
-            maxGust=max_g,
-            maxSustained=max_s,
-            probability=round(prob, 2),
-            predicted_customers_out=predicted,
-            crews=crew_ct,
-        )
-    except Exception:
-        # Never skip a county — return fallback
-        return fallback_row(county)
-def compute_rows_for_counties(counties: List[County], hours: int) -> List[WxRow]:
-    rows: List[WxRow] = []
-    if not counties:
-        return rows
-
-    max_workers = min(len(counties), WX_MAX_WORKERS)
-    if max_workers <= 1:
-        for c in counties:
-            rows.append(fetch_row_for_county(c, hours))
-        return rows
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_county = {
-            executor.submit(fetch_row_for_county, c, hours): c for c in counties
-        }
-        for fut in as_completed(future_to_county):
-            c = future_to_county[fut]
-            try:
-                row = fut.result()
-            except Exception:
-                row = fallback_row(c)
-            rows.append(row)
-
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# API route
-# ---------------------------------------------------------------------------
-
-@app.get("/api/wx")
-def api_wx(
-    mode: Mode = Query(..., description="National, Region, State, or County"),
-    hours: int = Query(6, ge=1, le=120),
-    sample: int = Query(20, ge=1, le=200),
-    region: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    county: Optional[str] = Query(None),
-):
-    counties = filter_counties(mode, sample, region, state, county)
-    rows = compute_rows_for_counties(counties, hours)
-
-    rows.sort(
-        key=lambda r: (r.severity, r.predicted_customers_out, r.maxGust, r.maxSustained),
-        reverse=True,
-    )
-    return [r.to_dict() for r in rows]
+# -------------------------------------------------------------------
+# Utilities
+# -------------------------------------------------------------------
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+def health() -> Dict[str, str]:
+    return {"status": "ok", "ts": now_iso(), "page_size": str(PAGE_SIZE)}
+
+
+# -------------------------------------------------------------------
+# County + population loading
+# -------------------------------------------------------------------
+async def load_counties_from_cenpop() -> None:
+    """Load county name, state, lat, lon, base population from local CenPop file."""
+    global COUNTIES, STATE_IDX, FIPS_IDX
+
+    if COUNTIES:
+        return
+
+    base_dir = os.path.dirname(__file__)
+    local_path = os.path.join(base_dir, CENPOP_FILE)
+    if not os.path.exists(local_path):
+        print(f"[WARN] CenPop file not found at {local_path}; no counties loaded.")
+        COUNTIES = []
+        STATE_IDX = {}
+        FIPS_IDX = {}
+        return
+
+    tmp: List[Tuple[str, str, float, float, int]] = []
+    STATE_IDX = {}
+    FIPS_IDX = {}
+
+    with open(local_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                state_fp = row["STATEFP"]
+                county_fp = row["COUNTYFP"]
+                fips = f"{state_fp}{county_fp}"
+                county_name = row["COUNAME"]
+                state_full = row["STNAME"]
+                state_abbr = STATE_NAME_TO_ABBR.get(state_full)
+                if not state_abbr:
+                    continue
+                lat = float(row["LATITUDE"])
+                lon = float(row["LONGITUDE"])
+                pop = int(row["POPULATION"])
+            except Exception:
+                continue
+
+            idx = len(tmp)
+            tmp.append((county_name, state_abbr, lat, lon, pop))
+            FIPS_IDX[fips] = idx
+            STATE_IDX.setdefault(state_abbr, []).append(idx)
+
+    COUNTIES = tmp
+    print(f"[INFO] Loaded {len(COUNTIES)} counties from CenPop.")
+
+
+async def load_populations_from_pep() -> None:
+    """Overlay latest PEP populations onto existing COUNTIES using FIPS mapping."""
+    global COUNTIES
+
+    if not COUNTIES or not FIPS_IDX:
+        print("[WARN] load_populations_from_pep called with no base counties; skipping PEP overlay.")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.get(PEP_URL)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        print(f"[WARN] PEP API load failed: {e}; keeping base populations.")
+        return
+
+    if not data or len(data) < 2:
+        print("[WARN] PEP API returned no data; keeping base populations.")
+        return
+
+    header = data[0]
+
+    def find_index(key: str) -> int:
+        for i, h in enumerate(header):
+            if h.lower() == key.lower():
+                return i
+        raise ValueError(f"{key!r} not found in headers: {header}")
+
+    try:
+        pop_i = find_index("pop")
+        state_i = find_index("state")
+        county_i = find_index("county")
+    except ValueError as e:
+        print(f"[WARN] Unexpected PEP header {header}: {e}; keeping base populations.")
+        return
+
+    updated = 0
+    for row in data[1:]:
+        try:
+            state_fips = row[state_i]
+            county_fips = row[county_i]
+            fips = f"{state_fips}{county_fips}"
+            if fips not in FIPS_IDX:
+                continue
+            pop_val = int(row[pop_i])
+        except Exception:
+            continue
+
+        idx = FIPS_IDX[fips]
+        c_name, st, la, lo, _old_pop = COUNTIES[idx]
+        COUNTIES[idx] = (c_name, st, la, lo, pop_val)
+        updated += 1
+
+    print(f"[INFO] Updated populations from PEP for {updated} counties.")
+
+
+# -------------------------------------------------------------------
+# NWS helpers
+# -------------------------------------------------------------------
+NWS_USER_AGENT = "DivergentWx/1.0 (support@divergentalliance.com)"
+
+
+def _parse_mph(value: str) -> float:
+    """
+    Parse strings like:
+      "20 mph"
+      "15 to 25 mph"
+    into a single mph value (using the first integer we find).
+
+    No regex, just character scanning.
+    """
+    if not value:
+        raise NoDataError("empty speed string")
+
+    # Split on spaces, then scan characters for digits.
+    parts = value.split(" ")
+    for part in parts:
+        digits = ""
+        for ch in part:
+            if "0" <= ch <= "9":
+                digits += ch
+            elif digits:
+                # We already collected some digits; stop at first non-digit.
+                break
+        if digits:
+            try:
+                return float(digits)
+            except Exception:
+                pass
+
+    raise NoDataError(f"could not parse mph from {value!r}")
+
+
+async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, float, float, float, str]:
+    """
+    Fetch hourly wind for a lat/lon from NWS.
+
+    Returns:
+      (expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_timestamp)
+
+    IMPORTANT: this function NEVER fabricates calm conditions.
+    - On any network / parsing / data error, a NoDataError is raised.
+    - The caller (compute) will catch that and skip this county.
+    """
+    hours = max(1, min(72, int(hours) if hours else 24))
+
+    headers = {
+        "User-Agent": NWS_USER_AGENT,
+        "Accept": "application/geo+json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            # 1) Resolve grid point for this lat/lon
+            points_url = f"https://api.weather.gov/points/{lat},{lon}"
+            r_points = await client.get(points_url, headers=headers)
+            r_points.raise_for_status()
+            j_points = r_points.json()
+            props = j_points.get("properties") or {}
+            hourly_url = props.get("forecastHourly")
+            if not hourly_url:
+                raise NoDataError("NWS points missing forecastHourly")
+
+            # 2) Fetch hourly forecast
+            r_hourly = await client.get(hourly_url, headers=headers)
+            r_hourly.raise_for_status()
+            j_hourly = r_hourly.json()
+            props_h = j_hourly.get("properties") or {}
+            periods = props_h.get("periods") or []
+    except NoDataError:
+        # Propagate explicit "no data" conditions upward.
+        raise
+    except Exception as exc:
+        # Any other error is treated as "no usable data".
+        raise NoDataError(f"NWS error: {exc}") from exc
+
+    if not periods:
+        raise NoDataError("NWS hourly returned no periods")
+
+    # Limit to requested window
+    n = min(len(periods), max(6, hours))
+
+    gusts: List[float] = []
+    sustained: List[float] = []
+
+    upstream_stamp = now_iso()
+
+    for idx in range(n):
+        period = periods[idx] or {}
+        if idx == 0:
+            upstream_stamp = period.get("startTime") or upstream_stamp
+
+        wind_speed_str = str(period.get("windSpeed") or "").strip()
+        wind_gust_str = str(period.get("windGust") or "").strip()
+
+        # Parse sustained
+        try:
+            spd = _parse_mph(wind_speed_str) if wind_speed_str else None
+        except NoDataError:
+            spd = None
+
+        # Parse gust, fallback to sustained if gust is missing but speed exists.
+        try:
+            gst = _parse_mph(wind_gust_str) if wind_gust_str else None
+        except NoDataError:
+            gst = None
+
+        if spd is None and gst is None:
+            # Nothing usable for this hour.
+            continue
+
+        if spd is not None:
+            sustained.append(spd)
+
+        if gst is not None:
+            gusts.append(gst)
+        elif spd is not None:
+            gusts.append(spd)
+
+    if not gusts or not sustained:
+        raise NoDataError("NWS hourly had no usable wind data")
+
+    # Conservative statistics
+    max_gust = max(gusts)
+    max_sustained = max(sustained)
+
+    # For expected values, we keep it simple: mean of the sample we collected.
+    g_sum = 0.0
+    s_sum = 0.0
+    count = min(len(gusts), len(sustained))
+    for i in range(count):
+        g_sum += gusts[i]
+        s_sum += sustained[i]
+    expected_gust = g_sum / float(count)
+    expected_sustained = s_sum / float(count)
+
+    probability = probability_from_wind(max_gust, max_sustained)
+
+    return expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_stamp
+
+
+# -------------------------------------------------------------------
+# Outage model (conservative)
+# -------------------------------------------------------------------
+def classify_severity(max_gust: float, max_sustained: float) -> int:
+    """
+    0..4 severity ladder on mph winds.
+      0: Calm / nuisance
+      1: Localized
+      2: Scattered
+      3: Widespread / significant
+      4: Extreme / widespread
+    """
+    if max_gust >= 75 or max_sustained >= 45:
+        return 4
+    if max_gust >= 58 or max_sustained >= 35:
+        return 3
+    if max_gust >= 45 or max_sustained >= 25:
+        return 2
+    if max_gust >= 35 or max_sustained >= 18:
+        return 1
+    return 0
+
+
+def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int, int]:
+    """
+    Very simple, conservative outage model:
+
+      - If severity 0 or probability tiny -> 0
+      - Otherwise outages scale with population * probability * rate(severity)
+
+    Returns (predicted_customers_out, crews).
+    """
+    if pop <= 0:
+        return 0, 0
+
+    if severity <= 0 or probability <= 0.05:
+        return 0, 0
+
+    # Base rates: fraction of population impacted
+    if severity >= 4:
+        rate = 0.015
+    elif severity == 3:
+        rate = 0.010
+    elif severity == 2:
+        rate = 0.005
+    else:  # severity == 1
+        rate = 0.002
+
+    predicted = int(pop * probability * rate)
+
+    if predicted <= 0:
+        return 0, 0
+
+    # Roughly 1 crew per 4k customers, rounded up
+    crews = (predicted + 3999) // 4000
+    if crews < 1:
+        crews = 1
+    if crews > 999:
+        crews = 999
+
+    return predicted, crews
+
+
+def probability_from_wind(max_gust: float, max_sustained: float) -> float:
+    """
+    Simple heuristic probability based on wind magnitudes.
+
+    Output is clamped to [0.0, 0.95].
+    """
+    if max_gust <= 0 and max_sustained <= 0:
+        return 0.0
+
+    # Mild days stay low; only severe wind events get near 0.9+
+    base = max(max_gust / 90.0, max_sustained / 60.0)
+    if base < 0:
+        base = 0.0
+    if base > 0.95:
+        base = 0.95
+    return base
+
+
+def mk_row(
+    county_name: str,
+    state: str,
+    expected_gust: float,
+    expected_sustained: float,
+    max_gust: float,
+    max_sustained: float,
+    probability: float,
+    pop: int,
+    stamp: str,
+) -> Dict:
+    severity = classify_severity(max_gust, max_sustained)
+    predicted, crews = outage_for_county(pop, probability, severity)
+
+    # Confidence just mirrors probability, but in %
+    if probability < 0:
+        probability = 0.0
+    if probability > 0.95:
+        probability = 0.95
+    confidence = int(round(probability * 100.0))
+    if confidence < 0:
+        confidence = 0
+    if confidence > 100:
+        confidence = 100
+
+    return {
+        "county": county_name,
+        "state": state,
+        "expectedGust": round(expected_gust, 1),
+        "expectedSustained": round(expected_sustained, 1),
+        "maxGust": round(max_gust, 1),
+        "maxSustained": round(max_sustained, 1),
+        "probability": round(probability, 2),
+        "crews": crews,
+        "severity": severity,
+        "confidence": confidence,
+        "population": pop,
+        "predicted_customers_out": predicted,
+        "generatedAt": now_iso(),
+        "source": "nws",
+        "upstreamStamp": stamp,
+    }
+
+
+# -------------------------------------------------------------------
+# Core compute + state / mode selection
+# -------------------------------------------------------------------
+def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
+    """
+    Select a subset of county indices based on mode.
+
+    In your current app you are using only "State" mode, but we keep
+    "Nationwide" and "Regional" here for compatibility.
+    """
+    mode_clean = (mode or "State").strip()
+
+    if mode_clean == "Nationwide":
+        idx = list(range(len(COUNTIES)))
+    elif mode_clean == "State" and state:
+        idx = STATE_IDX.get(state.upper(), [])
+    elif mode_clean == "Regional" and region in REGION_STATES:
+        allowed = set(REGION_STATES[region])
+        base: List[int] = []
+        for st in allowed:
+            base.extend(STATE_IDX.get(st, []))
+        idx = base
+    else:
+        idx = []
+
+    if not idx:
+        return []
+
+    # Prefer largest counties first
+    idx_sorted = sorted(idx, key=lambda i: COUNTIES[i][4], reverse=True)
+
+    if sample > 0 and sample < len(idx_sorted):
+        return idx_sorted[:sample]
+
+    return idx_sorted
+
+
+def cache_key(mode: str, region: str, state: str, hours: int, sample: int) -> str:
+    return f"{mode}|{region}|{state}|{hours}|{sample}"
+
+
+async def compute(indices: List[int], hours: int) -> List[Dict]:
+    """
+    For each county index, fetch NWS data and build a row.
+
+    Counties with missing / bad data are skipped (NoDataError caught per-county).
+    """
+    out: List[Dict] = []
+    sem = asyncio.Semaphore(6)
+
+    async def one(i: int) -> None:
+        c_name, st, la, lo, pop = COUNTIES[i]
+        try:
+            async with sem:
+                eg, es, mg, ms, p, stamp = await live_wind(la, lo, hours)
+            row = mk_row(c_name, st, eg, es, mg, ms, p, pop, stamp)
+        except NoDataError as exc:
+            print(f"[WARN] NWS no data for {c_name}, {st}: {exc}")
+            return
+        except Exception as exc:
+            print(f"[WARN] compute error for {c_name}, {st}: {exc}")
+            return
+
+        out.append(row)
+
+    await asyncio.gather(*(one(i) for i in indices))
+
+    # Sort by severity / gust so the most interesting rows float to the top
+    out.sort(key=lambda r: (r.get("severity", 0), r.get("maxGust", 0.0)), reverse=True)
+    return out
+
+
+async def handle(
+    mode: str,
+    region: str,
+    state: str,
+    hours: int,
+    sample: int,
+    nocache: int,
+) -> List[Dict]:
+    await load_counties_from_cenpop()
+    await load_populations_from_pep()
+
+    if not COUNTIES:
+        return []
+
+    # Clamp hours and sample
+    hours = max(6, min(72, int(hours) if hours else 24))
+
+    # If sample is not provided, use PAGE_SIZE; hard cap at 4 pages for safety.
+    if not sample:
+        sample = PAGE_SIZE
+    else:
+        sample = int(sample)
+    if sample < 1:
+        sample = 1
+    if sample > PAGE_SIZE * 4:
+        sample = PAGE_SIZE * 4
+
+    mode_eff = (mode or "State").strip()
+    if state:
+        mode_eff = "State"
+
+    idx = indices_for(mode_eff, region, state, sample)
+    if not idx:
+        return []
+
+    key = cache_key(mode_eff, region or "", state or "", hours, sample)
+    now_ts = time.time()
+
+    if not nocache:
+        hit = CACHE.get(key)
+        if hit and (now_ts - hit[0]) < 600:
+            return hit[1]
+
+    rows = await compute(idx, hours)
+
+    CACHE[key] = (now_ts, rows)
+    return rows
+
+
+# -------------------------------------------------------------------
+# FastAPI routes
+# -------------------------------------------------------------------
+@app.get("/api/wx")
+async def api_wx(
+    req: Request,
+    mode: str = "State",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = PAGE_SIZE,
+    nocache: int = 0,
+):
+    # Default to State mode if a state is provided
+    mode_eff = mode or "State"
+    if state:
+        mode_eff = "State"
+    return await handle(mode_eff, region, state, hours, sample, nocache)
+
+
+@app.get("/wx")
+async def wx_alias(
+    req: Request,
+    mode: str = "State",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = PAGE_SIZE,
+    nocache: int = 0,
+):
+    mode_eff = mode or "State"
+    if state:
+        mode_eff = "State"
+    return await handle(mode_eff, region, state, hours, sample, nocache)
+
+
+@app.get("/{full_path:path}")
+async def catch_all(
+    req: Request,
+    full_path: str,
+    mode: str = "State",
+    region: str = "",
+    state: str = "",
+    hours: int = 24,
+    sample: int = PAGE_SIZE,
+    nocache: int = 0,
+):
+    mode_eff = mode or "State"
+    if state:
+        mode_eff = "State"
+    return await handle(mode_eff, region, state, hours, sample, nocache)
+
+
+@app.on_event("startup")
+async def init() -> None:
+    await load_counties_from_cenpop()
+    await load_populations_from_pep()
