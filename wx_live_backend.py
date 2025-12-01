@@ -1,22 +1,20 @@
-﻿"""
-Divergent Wx Backend (NWS + CenPop + PEP)
+﻿from __future__ import annotations
+
+"""
+Divergent Wx Backend (NWS + CenPop + PEP) with windDirection.
 
 - Uses US Census CenPop + PEP populations for county centroids and populations.
 - Uses NWS / NOAA (api.weather.gov) hourly forecast for wind.
-- Does NOT use Open-Meteo anywhere.
-- Exposes /api/wx with a "State" mode (Nationwide / Regional kept for compatibility).
+- Exposes /api/wx with "State" mode (Nationwide / Regional for compatibility).
 - Outage and crew numbers are intentionally conservative.
 
-Key requirement from user:
+Key requirement:
   "If there's an error or no data, the function returns default values. = NEVER"
 
 We implement that as:
-  * The lowâ€“level NWS fetch (live_wind) NEVER returns fabricated "calm" values.
-  * If NWS data cannot be obtained or parsed for a county, a NoDataError is raised.
-  * The higher-level compute() catches NoDataError per-county and simply SKIPS that
-    county from the result list instead of inventing zeros.
-
-So: you either get real NWS-derived numbers, or that county is omitted.
+  * live_wind NEVER fabricates calm data.
+  * If NWS cannot be obtained / parsed, a NoDataError is raised.
+  * compute() catches NoDataError per-county and SKIPS that county.
 """
 
 import asyncio
@@ -30,46 +28,24 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-# -------------------------------------------------------------------
-# Data sources / constants
-# -------------------------------------------------------------------
-
 CENPOP_FILE = "CenPop2020_Mean_CO.txt"
 PEP_URL = (
     "https://api.census.gov/data/2023/pep/population"
     "?get=NAME,POP,STATE,COUNTY&for=county:*"
 )
 
-# Small page-size constant so backend + frontend can stay in sync.
 PAGE_SIZE = 15
 
-# Official Census Regions (for optional "Nationwide" / "Regional" modes)
 REGION_STATES: Dict[str, List[str]] = {
     "Northeast": ["CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"],
     "Midwest": ["IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD"],
     "South": [
-        "DE",
-        "FL",
-        "GA",
-        "MD",
-        "NC",
-        "SC",
-        "VA",
-        "DC",
-        "WV",
-        "AL",
-        "KY",
-        "MS",
-        "TN",
-        "AR",
-        "LA",
-        "OK",
-        "TX",
+        "DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV",
+        "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX",
     ],
     "West": ["AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"],
 }
 
-# Parsed counties: (county_name, state_abbr, lat, lon, population)
 COUNTIES: List[Tuple[str, str, float, float, int]] = []
 STATE_IDX: Dict[str, List[int]] = {}
 FIPS_IDX: Dict[str, int] = {}
@@ -135,7 +111,7 @@ class NoDataError(Exception):
     """Raised when NWS data is missing / unusable for a county."""
 
 
-app = FastAPI(title="Divergent Wx Backend (NWS + CenPop + PEP)")
+app = FastAPI(title="Divergent Wx Backend (NWS + CenPop + PEP + windDirection)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -144,9 +120,6 @@ app.add_middleware(
 )
 
 
-# -------------------------------------------------------------------
-# Utilities
-# -------------------------------------------------------------------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -156,11 +129,7 @@ def health() -> Dict[str, str]:
     return {"status": "ok", "ts": now_iso(), "page_size": str(PAGE_SIZE)}
 
 
-# -------------------------------------------------------------------
-# County + population loading
-# -------------------------------------------------------------------
 async def load_counties_from_cenpop() -> None:
-    """Load county name, state, lat, lon, base population from local CenPop file."""
     global COUNTIES, STATE_IDX, FIPS_IDX
 
     if COUNTIES:
@@ -207,7 +176,6 @@ async def load_counties_from_cenpop() -> None:
 
 
 async def load_populations_from_pep() -> None:
-    """Overlay latest PEP populations onto existing COUNTIES using FIPS mapping."""
     global COUNTIES
 
     if not COUNTIES or not FIPS_IDX:
@@ -229,26 +197,24 @@ async def load_populations_from_pep() -> None:
 
     header = data[0]
 
-    def find_index(key: str) -> int:
+    def idx_of(key: str) -> int:
         for i, h in enumerate(header):
             if h.lower() == key.lower():
                 return i
-        raise ValueError(f"{key!r} not found in headers: {header}")
+        raise ValueError(f"{key!r} not in header {header!r}")
 
     try:
-        pop_i = find_index("pop")
-        state_i = find_index("state")
-        county_i = find_index("county")
+        pop_i = idx_of("pop")
+        st_i = idx_of("state")
+        co_i = idx_of("county")
     except ValueError as e:
-        print(f"[WARN] Unexpected PEP header {header}: {e}; keeping base populations.")
+        print(f"[WARN] PEP header mismatch: {e}")
         return
 
     updated = 0
     for row in data[1:]:
         try:
-            state_fips = row[state_i]
-            county_fips = row[county_i]
-            fips = f"{state_fips}{county_fips}"
+            fips = f"{row[st_i]}{row[co_i]}"
             if fips not in FIPS_IDX:
                 continue
             pop_val = int(row[pop_i])
@@ -256,31 +222,19 @@ async def load_populations_from_pep() -> None:
             continue
 
         idx = FIPS_IDX[fips]
-        c_name, st, la, lo, _old_pop = COUNTIES[idx]
-        COUNTIES[idx] = (c_name, st, la, lo, pop_val)
+        name, st, la, lo, _old = COUNTIES[idx]
+        COUNTIES[idx] = (name, st, la, lo, pop_val)
         updated += 1
 
     print(f"[INFO] Updated populations from PEP for {updated} counties.")
 
 
-# -------------------------------------------------------------------
-# NWS helpers
-# -------------------------------------------------------------------
 NWS_USER_AGENT = "DivergentWx/1.0 (support@divergentalliance.com)"
 
 
 def _parse_mph(value: str) -> float:
-    """
-    Parse strings like:
-      "20 mph"
-      "15 to 25 mph"
-    into a single mph value (using the first integer we find).
-
-    No regex, just character scanning.
-    """
     if not value:
         raise NoDataError("empty speed string")
-
     parts = value.split(" ")
     for part in parts:
         digits = ""
@@ -294,31 +248,27 @@ def _parse_mph(value: str) -> float:
                 return float(digits)
             except Exception:
                 pass
-
     raise NoDataError(f"could not parse mph from {value!r}")
 
 
-async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, float, float, float, str]:
-    """
-    Fetch hourly wind for a lat/lon from NWS.
+def _mode_direction(dirs: List[str]) -> str:
+    counts: Dict[str, int] = {}
+    for d in dirs:
+        d_clean = d.strip().upper()
+        if not d_clean:
+            continue
+        counts[d_clean] = counts.get(d_clean, 0) + 1
+    if not counts:
+        return "UNKNOWN"
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
-    Returns:
-      (expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_timestamp)
 
-    IMPORTANT: this function NEVER fabricates calm conditions.
-    - On any network / parsing / data error, a NoDataError is raised.
-    - The caller (compute) will catch that and skip this county.
-    """
+async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, float, float, float, str, str]:
     hours = max(1, min(72, int(hours) if hours else 24))
-
-    headers = {
-        "User-Agent": NWS_USER_AGENT,
-        "Accept": "application/geo+json",
-    }
+    headers = {"User-Agent": NWS_USER_AGENT, "Accept": "application/geo+json"}
 
     try:
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            # 1) Resolve grid point for this lat/lon
             points_url = f"https://api.weather.gov/points/{lat},{lon}"
             r_points = await client.get(points_url, headers=headers)
             r_points.raise_for_status()
@@ -328,7 +278,6 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
             if not hourly_url:
                 raise NoDataError("NWS points missing forecastHourly")
 
-            # 2) Fetch hourly forecast (redirects handled by follow_redirects=True)
             r_hourly = await client.get(hourly_url, headers=headers)
             r_hourly.raise_for_status()
             j_hourly = r_hourly.json()
@@ -343,9 +292,9 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
         raise NoDataError("NWS hourly returned no periods")
 
     n = min(len(periods), max(6, hours))
-
     gusts: List[float] = []
     sustained: List[float] = []
+    dirs: List[str] = []
 
     upstream_stamp = now_iso()
 
@@ -356,6 +305,7 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
 
         wind_speed_str = str(period.get("windSpeed") or "").strip()
         wind_gust_str = str(period.get("windGust") or "").strip()
+        wind_dir_str = str(period.get("windDirection") or "").strip()
 
         try:
             spd = _parse_mph(wind_speed_str) if wind_speed_str else None
@@ -372,11 +322,13 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
 
         if spd is not None:
             sustained.append(spd)
-
         if gst is not None:
             gusts.append(gst)
         elif spd is not None:
             gusts.append(spd)
+
+        if wind_dir_str:
+            dirs.append(wind_dir_str)
 
     if not gusts or not sustained:
         raise NoDataError("NWS hourly had no usable wind data")
@@ -384,32 +336,19 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
     max_gust = max(gusts)
     max_sustained = max(sustained)
 
-    g_sum = 0.0
-    s_sum = 0.0
     count = min(len(gusts), len(sustained))
-    for i in range(count):
-        g_sum += gusts[i]
-        s_sum += sustained[i]
+    g_sum = sum(gusts[:count])
+    s_sum = sum(sustained[:count])
     expected_gust = g_sum / float(count)
     expected_sustained = s_sum / float(count)
 
     probability = probability_from_wind(max_gust, max_sustained)
+    dom_dir = _mode_direction(dirs)
 
-    return expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_stamp
+    return expected_gust, expected_sustained, max_gust, max_sustained, probability, upstream_stamp, dom_dir
 
 
-# -------------------------------------------------------------------
-# Outage model (conservative)
-# -------------------------------------------------------------------
 def classify_severity(max_gust: float, max_sustained: float) -> int:
-    """
-    0..4 severity ladder on mph winds.
-      0: Calm / nuisance
-      1: Localized
-      2: Scattered
-      3: Widespread / significant
-      4: Extreme / widespread
-    """
     if max_gust >= 75 or max_sustained >= 45:
         return 4
     if max_gust >= 58 or max_sustained >= 35:
@@ -422,17 +361,8 @@ def classify_severity(max_gust: float, max_sustained: float) -> int:
 
 
 def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int, int]:
-    """
-    Very simple, conservative outage model:
-
-      - If severity 0 or probability tiny -> 0
-      - Otherwise outages scale with population * probability * rate(severity)
-
-    Returns (predicted_customers_out, crews).
-    """
     if pop <= 0:
         return 0, 0
-
     if severity <= 0 or probability <= 0.05:
         return 0, 0
 
@@ -446,7 +376,6 @@ def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int,
         rate = 0.002
 
     predicted = int(pop * probability * rate)
-
     if predicted <= 0:
         return 0, 0
 
@@ -455,19 +384,12 @@ def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int,
         crews = 1
     if crews > 999:
         crews = 999
-
     return predicted, crews
 
 
 def probability_from_wind(max_gust: float, max_sustained: float) -> float:
-    """
-    Simple heuristic probability based on wind magnitudes.
-
-    Output is clamped to [0.0, 0.95].
-    """
     if max_gust <= 0 and max_sustained <= 0:
         return 0.0
-
     base = max(max_gust / 90.0, max_sustained / 60.0)
     if base < 0:
         base = 0.0
@@ -486,6 +408,7 @@ def mk_row(
     probability: float,
     pop: int,
     stamp: str,
+    wind_dir: str,
 ) -> Dict:
     severity = classify_severity(max_gust, max_sustained)
     predicted, crews = outage_for_county(pop, probability, severity)
@@ -516,19 +439,11 @@ def mk_row(
         "generatedAt": now_iso(),
         "source": "nws",
         "upstreamStamp": stamp,
+        "windDirection": wind_dir,
     }
 
 
-# -------------------------------------------------------------------
-# Core compute + state / mode selection
-# -------------------------------------------------------------------
 def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
-    """
-    Select a subset of county indices based on mode.
-
-    "State" mode is what you're using now, but "Nationwide" and "Regional"
-    are kept for compatibility.
-    """
     mode_clean = (mode or "State").strip()
 
     if mode_clean == "Nationwide":
@@ -548,10 +463,8 @@ def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
         return []
 
     idx_sorted = sorted(idx, key=lambda i: COUNTIES[i][4], reverse=True)
-
     if sample > 0 and sample < len(idx_sorted):
         return idx_sorted[:sample]
-
     return idx_sorted
 
 
@@ -560,27 +473,21 @@ def cache_key(mode: str, region: str, state: str, hours: int, sample: int) -> st
 
 
 async def compute(indices: List[int], hours: int) -> List[Dict]:
-    """
-    For each county index, fetch NWS data and build a row.
-
-    Counties with missing / bad data are skipped (NoDataError caught per-county).
-    """
     out: List[Dict] = []
     sem = asyncio.Semaphore(6)
 
     async def one(i: int) -> None:
-        c_name, st, la, lo, pop = COUNTIES[i]
+        name, st, la, lo, pop = COUNTIES[i]
         try:
             async with sem:
-                eg, es, mg, ms, p, stamp = await live_wind(la, lo, hours)
-            row = mk_row(c_name, st, eg, es, mg, ms, p, pop, stamp)
+                eg, es, mg, ms, p, stamp, wdir = await live_wind(la, lo, hours)
+            row = mk_row(name, st, eg, es, mg, ms, p, pop, stamp, wdir)
         except NoDataError as exc:
-            print(f"[WARN] NWS no data for {c_name}, {st}: {exc}")
+            print(f"[WARN] NWS no data for {name}, {st}: {exc}")
             return
         except Exception as exc:
-            print(f"[WARN] compute error for {c_name}, {st}: {exc}")
+            print(f"[WARN] compute error for {name}, {st}: {exc}")
             return
-
         out.append(row)
 
     await asyncio.gather(*(one(i) for i in indices))
@@ -631,14 +538,10 @@ async def handle(
             return hit[1]
 
     rows = await compute(idx, hours)
-
     CACHE[key] = (now_ts, rows)
     return rows
 
 
-# -------------------------------------------------------------------
-# FastAPI routes
-# -------------------------------------------------------------------
 @app.get("/api/wx")
 async def api_wx(
     req: Request,
