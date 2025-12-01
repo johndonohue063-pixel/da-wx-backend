@@ -11,7 +11,7 @@ Key requirement from user:
   "If there's an error or no data, the function returns default values. = NEVER"
 
 We implement that as:
-  * The low–level NWS fetch (live_wind) NEVER returns fabricated "calm" values.
+  * The lowâ€“level NWS fetch (live_wind) NEVER returns fabricated "calm" values.
   * If NWS data cannot be obtained or parsed for a county, a NoDataError is raised.
   * The higher-level compute() catches NoDataError per-county and simply SKIPS that
     county from the result list instead of inventing zeros.
@@ -41,7 +41,6 @@ PEP_URL = (
 )
 
 # Small page-size constant so backend + frontend can stay in sync.
-# Your Flutter code can use the same value (e.g., const int kPageSize = 15;).
 PAGE_SIZE = 15
 
 # Official Census Regions (for optional "Nationwide" / "Regional" modes)
@@ -75,7 +74,6 @@ COUNTIES: List[Tuple[str, str, float, float, int]] = []
 STATE_IDX: Dict[str, List[int]] = {}
 FIPS_IDX: Dict[str, int] = {}
 CACHE: Dict[str, Tuple[float, List[Dict]]] = {}
-
 
 STATE_NAME_TO_ABBR: Dict[str, str] = {
     "Alabama": "AL",
@@ -217,7 +215,7 @@ async def load_populations_from_pep() -> None:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
             r = await c.get(PEP_URL)
             r.raise_for_status()
             data = r.json()
@@ -283,7 +281,6 @@ def _parse_mph(value: str) -> float:
     if not value:
         raise NoDataError("empty speed string")
 
-    # Split on spaces, then scan characters for digits.
     parts = value.split(" ")
     for part in parts:
         digits = ""
@@ -291,7 +288,6 @@ def _parse_mph(value: str) -> float:
             if "0" <= ch <= "9":
                 digits += ch
             elif digits:
-                # We already collected some digits; stop at first non-digit.
                 break
         if digits:
             try:
@@ -321,7 +317,7 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             # 1) Resolve grid point for this lat/lon
             points_url = f"https://api.weather.gov/points/{lat},{lon}"
             r_points = await client.get(points_url, headers=headers)
@@ -332,23 +328,20 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
             if not hourly_url:
                 raise NoDataError("NWS points missing forecastHourly")
 
-            # 2) Fetch hourly forecast
+            # 2) Fetch hourly forecast (redirects handled by follow_redirects=True)
             r_hourly = await client.get(hourly_url, headers=headers)
             r_hourly.raise_for_status()
             j_hourly = r_hourly.json()
             props_h = j_hourly.get("properties") or {}
             periods = props_h.get("periods") or []
     except NoDataError:
-        # Propagate explicit "no data" conditions upward.
         raise
     except Exception as exc:
-        # Any other error is treated as "no usable data".
         raise NoDataError(f"NWS error: {exc}") from exc
 
     if not periods:
         raise NoDataError("NWS hourly returned no periods")
 
-    # Limit to requested window
     n = min(len(periods), max(6, hours))
 
     gusts: List[float] = []
@@ -364,20 +357,17 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
         wind_speed_str = str(period.get("windSpeed") or "").strip()
         wind_gust_str = str(period.get("windGust") or "").strip()
 
-        # Parse sustained
         try:
             spd = _parse_mph(wind_speed_str) if wind_speed_str else None
         except NoDataError:
             spd = None
 
-        # Parse gust, fallback to sustained if gust is missing but speed exists.
         try:
             gst = _parse_mph(wind_gust_str) if wind_gust_str else None
         except NoDataError:
             gst = None
 
         if spd is None and gst is None:
-            # Nothing usable for this hour.
             continue
 
         if spd is not None:
@@ -391,11 +381,9 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[float, float, f
     if not gusts or not sustained:
         raise NoDataError("NWS hourly had no usable wind data")
 
-    # Conservative statistics
     max_gust = max(gusts)
     max_sustained = max(sustained)
 
-    # For expected values, we keep it simple: mean of the sample we collected.
     g_sum = 0.0
     s_sum = 0.0
     count = min(len(gusts), len(sustained))
@@ -448,14 +436,13 @@ def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int,
     if severity <= 0 or probability <= 0.05:
         return 0, 0
 
-    # Base rates: fraction of population impacted
     if severity >= 4:
         rate = 0.015
     elif severity == 3:
         rate = 0.010
     elif severity == 2:
         rate = 0.005
-    else:  # severity == 1
+    else:
         rate = 0.002
 
     predicted = int(pop * probability * rate)
@@ -463,7 +450,6 @@ def outage_for_county(pop: int, probability: float, severity: int) -> Tuple[int,
     if predicted <= 0:
         return 0, 0
 
-    # Roughly 1 crew per 4k customers, rounded up
     crews = (predicted + 3999) // 4000
     if crews < 1:
         crews = 1
@@ -482,7 +468,6 @@ def probability_from_wind(max_gust: float, max_sustained: float) -> float:
     if max_gust <= 0 and max_sustained <= 0:
         return 0.0
 
-    # Mild days stay low; only severe wind events get near 0.9+
     base = max(max_gust / 90.0, max_sustained / 60.0)
     if base < 0:
         base = 0.0
@@ -505,7 +490,6 @@ def mk_row(
     severity = classify_severity(max_gust, max_sustained)
     predicted, crews = outage_for_county(pop, probability, severity)
 
-    # Confidence just mirrors probability, but in %
     if probability < 0:
         probability = 0.0
     if probability > 0.95:
@@ -542,8 +526,8 @@ def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
     """
     Select a subset of county indices based on mode.
 
-    In your current app you are using only "State" mode, but we keep
-    "Nationwide" and "Regional" here for compatibility.
+    "State" mode is what you're using now, but "Nationwide" and "Regional"
+    are kept for compatibility.
     """
     mode_clean = (mode or "State").strip()
 
@@ -563,7 +547,6 @@ def indices_for(mode: str, region: str, state: str, sample: int) -> List[int]:
     if not idx:
         return []
 
-    # Prefer largest counties first
     idx_sorted = sorted(idx, key=lambda i: COUNTIES[i][4], reverse=True)
 
     if sample > 0 and sample < len(idx_sorted):
@@ -602,7 +585,6 @@ async def compute(indices: List[int], hours: int) -> List[Dict]:
 
     await asyncio.gather(*(one(i) for i in indices))
 
-    # Sort by severity / gust so the most interesting rows float to the top
     out.sort(key=lambda r: (r.get("severity", 0), r.get("maxGust", 0.0)), reverse=True)
     return out
 
@@ -621,10 +603,8 @@ async def handle(
     if not COUNTIES:
         return []
 
-    # Clamp hours and sample
     hours = max(6, min(72, int(hours) if hours else 24))
 
-    # If sample is not provided, use PAGE_SIZE; hard cap at 4 pages for safety.
     if not sample:
         sample = PAGE_SIZE
     else:
@@ -669,7 +649,6 @@ async def api_wx(
     sample: int = PAGE_SIZE,
     nocache: int = 0,
 ):
-    # Default to State mode if a state is provided
     mode_eff = mode or "State"
     if state:
         mode_eff = "State"
