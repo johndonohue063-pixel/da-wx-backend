@@ -1,4 +1,4 @@
-﻿"""
+"""
 Divergent Wx Backend (NWS + CenPop + PEP) with Divergent Threat Index
 
 - Uses US Census CenPop + PEP populations for county centroids and populations.
@@ -155,7 +155,7 @@ async def load_populations_from_pep() -> None:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as c:
             r = await c.get(PEP_URL)
             r.raise_for_status()
             data = r.json()
@@ -270,7 +270,7 @@ async def live_wind(lat: float, lon: float, hours: int) -> Tuple[
     }
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
             points_url = f"https://api.weather.gov/points/{lat},{lon}"
             r_points = await client.get(points_url, headers=headers)
             r_points.raise_for_status()
@@ -477,7 +477,7 @@ def divergent_threat_index(
     elif max_gust >= 30:
         idx += 5
 
-    # Duration of â‰¥ 50 mph hours
+    # Duration of ≥ 50 mph hours
     if hours_50_plus > 0:
         idx += min(hours_50_plus * 6.0, 24.0)
 

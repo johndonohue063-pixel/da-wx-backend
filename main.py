@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import time
 import csv
 import os
@@ -161,7 +161,7 @@ async def load_populations_from_pep() -> None:
         return
 
     try:
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as c:
             r = await c.get(PEP_URL)
             r.raise_for_status()
             data = r.json()
@@ -228,7 +228,7 @@ async def live_wind(
             "forecast_days": 3,
             "timezone": "UTC",
         }
-        async with httpx.AsyncClient(timeout=20) as c:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
             r = await c.get(OM_BASE, params=params)
             r.raise_for_status()
             j = r.json()
@@ -497,7 +497,7 @@ async def api_wx(
     rows = await handle(mode, region, state, hours, sample, nocache)
 
     # FINAL SAFETY CLAMP:
-    # Threat Level 0 → no outages, no crews, prob 0.
+    # Threat Level 0 ? no outages, no crews, prob 0.
     for r in rows:
         if r.get("severity", 0) == 0:
             r["probability"] = 0.0
